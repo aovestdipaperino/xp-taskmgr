@@ -43,7 +43,9 @@ fn apply_classic_theme(cx: &mut App) {
 
         theme.table = white;
         theme.table_even = white;
-        theme.table_head = color::face();
+        // Transparent so the blank button `ListView::render_header` draws
+        // behind the row shows past the last column.
+        theme.table_head = gpui_kit::transparent_black();
         theme.table_head_foreground = color::text();
         theme.table_hover = white;
         theme.table_active = color::selection();
@@ -64,6 +66,9 @@ fn main() {
         .run(|cx| {
             gpui_kit::init(cx);
             apply_classic_theme(cx);
+            // Handled at app level so Cmd+Q also works from the About window.
+            cx.bind_keys([KeyBinding::new("cmd-q", taskmgr::Exit, None)]);
+            cx.on_action(|_: &taskmgr::Exit, cx| cx.quit());
 
             let bounds = Bounds::centered(None, size(px(470.), px(520.)), cx);
             let options = WindowOptions {

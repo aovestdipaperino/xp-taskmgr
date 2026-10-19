@@ -22,6 +22,7 @@ use sysinfo::{
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
     pub pid: u32,
+    pub parent: Option<u32>,
     pub name: String,
     pub user: String,
     pub uid: u32,
@@ -169,6 +170,7 @@ impl Sampler {
                 .map_or_else(|| uid_name(uid), |u| u.name().to_owned());
             processes.push(ProcessInfo {
                 pid,
+                parent: process.parent().map(sysinfo::Pid::as_u32),
                 name: process.name().to_string_lossy().into_owned(),
                 user,
                 uid,

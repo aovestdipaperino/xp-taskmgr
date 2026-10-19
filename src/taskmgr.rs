@@ -1,24 +1,26 @@
 //! The Task Manager window: title bar, menus, the five tabs and status bar.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableState};
 use gpui_kit::component::{Sizable as _, Size};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::about;
-use crate::apps::{self, AppTask};
+use crate::apps::{self, AppTask, Priority};
 use crate::graph::{self, Series};
 use crate::mac;
 use crate::stats::{Sampler, Snapshot};
-use crate::table::{self, ColumnSpec, Key, ListView, Row};
+use crate::table::{self, ColumnSpec, Key, ListView, Row, RowMenu};
 use crate::tray::{Tray, TrayEvent};
 use crate::xp::{self, Bevel, color};
 use futures::StreamExt as _;
@@ -41,8 +43,89 @@ actions!(
         OneGraphPerCpu,
         ShowKernelTimes,
         About,
+        // Applications row menu.
+        SwitchTo,
+        BringToFront,
+        MinimizeTask,
+        MaximizeTask,
+        Cascade,
+        TileHorizontally,
+        TileVertically,
+        EndTask,
+        GoToProcess,
+        // Processes row menu.
+        EndProcess,
+        EndProcessTree,
+        DebugProcess,
+        PriorityRealtime,
+        PriorityHigh,
+        PriorityAboveNormal,
+        PriorityNormal,
+        PriorityBelowNormal,
+        PriorityLow,
     ]
 );
+
+fn priority_action(priority: Priority) -> Box<dyn Action> {
+    match priority {
+        Priority::Realtime => Box::new(PriorityRealtime),
+        Priority::High => Box::new(PriorityHigh),
+        Priority::AboveNormal => Box::new(PriorityAboveNormal),
+        Priority::Normal => Box::new(PriorityNormal),
+        Priority::BelowNormal => Box::new(PriorityBelowNormal),
+        Priority::Low => Box::new(PriorityLow),
+    }
+}
+
+/// The Applications tab's row menu. The bold item is the double-click action.
+fn app_menu(focus: FocusHandle) -> RowMenu {
+    RowMenu::new(move |_, menu, _, _| {
+        menu.action_context(focus.clone())
+            .menu_element(Box::new(SwitchTo), |_, _| {
+                div().font_weight(FontWeight::BOLD).child("Switch To")
+            })
+            .menu("Bring To Front", Box::new(BringToFront))
+            .separator()
+            .menu("Minimize", Box::new(MinimizeTask))
+            .menu("Maximize", Box::new(MaximizeTask))
+            // XP enables these only with several tasks selected.
+            .menu_with_disabled("Cascade", Box::new(Cascade), true)
+            .menu_with_disabled("Tile Horizontally", Box::new(TileHorizontally), true)
+            .menu_with_disabled("Tile Vertically", Box::new(TileVertically), true)
+            .separator()
+            .menu("End Task", Box::new(EndTask))
+            .menu("Go To Process", Box::new(GoToProcess))
+    })
+}
+
+/// The Processes tab's row menu; Set Priority checks the current class.
+fn process_menu(focus: FocusHandle) -> RowMenu {
+    RowMenu::new(move |pid, menu, window, cx| {
+        let idle = pid == IDLE_PROCESS_ID;
+        let current = if idle {
+            None
+        } else {
+            apps::priority(pid as u32)
+        };
+        let f = focus.clone();
+        let priorities = PopupMenu::build(window, cx, move |m, _, _| {
+            Priority::ALL
+                .into_iter()
+                .fold(m.action_context(f.clone()), |m, p| {
+                    m.menu_with_check(p.label(), current == Some(p), priority_action(p))
+                })
+        });
+        // A realistic max width keeps Set Priority opening to the right (see
+        // the View menu in `render_menu_bar`).
+        menu.action_context(focus.clone())
+            .max_w(px(200.))
+            .menu_with_disabled("End Process", Box::new(EndProcess), idle)
+            .menu_with_disabled("End Process Tree", Box::new(EndProcessTree), idle)
+            .menu_with_disabled("Debug", Box::new(DebugProcess), true)
+            .separator()
+            .item(PopupMenuItem::submenu("Set Priority", priorities).disabled(idle))
+    })
+}
 
 const TABS: [&str; 5] = [
     "Applications",
@@ -121,18 +204,31 @@ fn col(name: &'static str, width: f32, right: bool) -> ColumnSpec {
 fn list(
     columns: Vec<ColumnSpec>,
     sort: Option<(usize, ColumnSort)>,
+    menu: Option<RowMenu>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<TableState<ListView>> {
-    cx.new(|cx| TableState::new(ListView::new(columns, sort), window, cx).col_movable(false))
+    let mut view = ListView::new(columns, sort);
+    if let Some(menu) = menu {
+        view = view.with_row_menu(menu);
+    }
+    // Header clicks only sort (see `ListView::render_th`); XP lists select
+    // whole rows, never columns.
+    cx.new(|cx| {
+        TableState::new(view, window, cx)
+            .col_movable(false)
+            .col_selectable(false)
+    })
 }
 
 impl TaskManager {
     /// Builds the view and starts sampling.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
         let app_list = list(
             vec![col("Task", 300., false), col("Status", 90., false)],
             Some((0, ColumnSort::Ascending)),
+            Some(app_menu(focus.clone())),
             window,
             cx,
         );
@@ -145,6 +241,7 @@ impl TaskManager {
                 col("Mem Usage", 80., true),
             ],
             Some((0, ColumnSort::Ascending)),
+            Some(process_menu(focus.clone())),
             window,
             cx,
         );
@@ -155,6 +252,7 @@ impl TaskManager {
                 col("Link Speed", 75., true),
                 col("State", 80., false),
             ],
+            None,
             None,
             window,
             cx,
@@ -168,12 +266,13 @@ impl TaskManager {
                 col("Session", 80., false),
             ],
             None,
+            None,
             window,
             cx,
         );
 
         let mut this = Self {
-            focus: cx.focus_handle(),
+            focus,
             tab: std::env::var("XP_TASKMGR_TAB")
                 .ok()
                 .and_then(|t| t.parse().ok())
@@ -230,13 +329,30 @@ impl TaskManager {
         this._subscriptions = lists
             .into_iter()
             .map(|list| {
-                cx.subscribe(list, |_, list, event: &TableEvent, cx| {
-                    if let TableEvent::SelectRow(ix) = event {
-                        list.update(cx, |s, cx| {
-                            s.delegate_mut().select_index(*ix);
+                cx.subscribe_in(list, window, |t, list, event: &TableEvent, window, cx| {
+                    match event {
+                        TableEvent::SelectRow(ix) => {
+                            list.update(cx, |s, cx| {
+                                s.delegate_mut().select_index(*ix);
+                                cx.notify();
+                            });
                             cx.notify();
-                        });
-                        cx.notify();
+                        }
+                        TableEvent::SelectColumn(_) => {
+                            list.update(cx, table::reselect);
+                        }
+                        // As in XP, right-clicking a row selects it. Selecting
+                        // forgets the right-clicked row, which the row menu
+                        // needs, so it is set back.
+                        TableEvent::RightClickedRow(Some(ix)) => list.update(cx, |s, cx| {
+                            s.set_selected_row(*ix, cx);
+                            s.set_right_clicked_row(Some(*ix), cx);
+                        }),
+                        // Double-click runs the row menu's bold item.
+                        TableEvent::DoubleClickedRow(_) if *list == t.app_list => {
+                            t.switch_to_selected(window, cx);
+                        }
+                        _ => {}
                     }
                 })
             })
@@ -481,6 +597,42 @@ impl TaskManager {
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &About, _, cx| t.open_about(cx)))
+            .on_action(cx.listener(|t, _: &SwitchTo, window, cx| t.switch_to_selected(window, cx)))
+            .on_action(cx.listener(|t, _: &BringToFront, _, cx| {
+                t.with_selected_app(cx, apps::bring_to_front);
+            }))
+            .on_action(cx.listener(|t, _: &MinimizeTask, _, cx| {
+                t.with_selected_app(cx, apps::minimize);
+            }))
+            .on_action(cx.listener(|t, _: &MaximizeTask, _, cx| {
+                t.with_selected_app(cx, apps::maximize);
+            }))
+            .on_action(cx.listener(|t, _: &EndTask, _, cx| t.end_selected_task(cx)))
+            .on_action(cx.listener(|t, _: &GoToProcess, _, cx| t.go_to_process(cx)))
+            .on_action(cx.listener(|t, _: &EndProcess, window, cx| {
+                t.end_selected_process(window, cx);
+            }))
+            .on_action(cx.listener(|t, _: &EndProcessTree, window, cx| {
+                t.end_selected_tree(window, cx);
+            }))
+            .on_action(cx.listener(|t, _: &PriorityRealtime, window, cx| {
+                t.set_selected_priority(Priority::Realtime, window, cx);
+            }))
+            .on_action(cx.listener(|t, _: &PriorityHigh, window, cx| {
+                t.set_selected_priority(Priority::High, window, cx);
+            }))
+            .on_action(cx.listener(|t, _: &PriorityAboveNormal, window, cx| {
+                t.set_selected_priority(Priority::AboveNormal, window, cx);
+            }))
+            .on_action(cx.listener(|t, _: &PriorityNormal, window, cx| {
+                t.set_selected_priority(Priority::Normal, window, cx);
+            }))
+            .on_action(cx.listener(|t, _: &PriorityBelowNormal, window, cx| {
+                t.set_selected_priority(Priority::BelowNormal, window, cx);
+            }))
+            .on_action(cx.listener(|t, _: &PriorityLow, window, cx| {
+                t.set_selected_priority(Priority::Low, window, cx);
+            }))
     }
 
     fn set_compact(&mut self, compact: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -614,57 +766,136 @@ impl TaskManager {
         }
     }
 
-    fn end_selected_process(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pid) = table::selected_id(self.proc_list.read(cx)) else {
+    fn with_selected_app(&self, cx: &Context<Self>, f: impl FnOnce(i32)) {
+        if let Some(pid) = table::selected_id(self.app_list.read(cx)) {
+            f(pid as i32);
+        }
+    }
+
+    /// Shows the selected application's process on the Processes tab.
+    fn go_to_process(&mut self, cx: &mut Context<Self>) {
+        let Some(pid) = table::selected_id(self.app_list.read(cx)) else {
             return;
         };
+        self.tab = 1;
+        self.proc_list
+            .update(cx, |s, cx| table::select_id(s, pid, cx));
+        cx.notify();
+    }
+
+    /// The selected process's pid and name, unless it is the idle process.
+    fn selected_process(&self, cx: &App) -> Option<(u32, String)> {
+        let pid = table::selected_id(self.proc_list.read(cx))?;
         if pid == IDLE_PROCESS_ID {
-            return;
+            return None;
         }
+        let pid = pid as u32;
         let name = self
             .snap
             .processes
             .iter()
-            .find(|p| u64::from(p.pid) == pid)
+            .find(|p| p.pid == pid)
             .map_or_else(String::new, |p| p.name.clone());
+        Some((pid, name))
+    }
+
+    fn end_selected_process(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((pid, name)) = self.selected_process(cx) else {
+            return;
+        };
         let this = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let this = this.clone();
-            dialog
-                .title("Task Manager Warning")
-                .w(px(400.))
-                .bg(color::face())
-                .rounded_none()
-                .text_color(color::text())
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.))
-                        .child(format!(
-                            "WARNING: Terminating a process can cause undesired results including \
-                             loss of data and system instability. The process will not be given \
-                             the chance to save its state or data before it is terminated. Are you \
-                             sure you want to terminate \"{name}\" (PID {pid})?"
-                        ))
-                        .child(
-                            div()
-                                .flex()
-                                .justify_center()
-                                .gap(px(6.))
-                                .child(xp::button("kill-yes", "Yes", true, move |_, window, cx| {
-                                    apps::kill(pid as u32, true);
-                                    window.close_dialog(cx);
-                                    if let Some(this) = this.upgrade() {
-                                        this.update(cx, TaskManager::refresh_now);
-                                    }
-                                }))
-                                .child(xp::button("kill-no", "No", true, |_, window, cx| {
-                                    window.close_dialog(cx);
-                                })),
-                        ),
-                )
-        });
+        confirm(
+            window,
+            cx,
+            "Task Manager Warning",
+            format!(
+                "WARNING: Terminating a process can cause undesired results including \
+                 loss of data and system instability. The process will not be given \
+                 the chance to save its state or data before it is terminated. Are you \
+                 sure you want to terminate \"{name}\" (PID {pid})?"
+            ),
+            move |_, cx| {
+                apps::kill(pid, true);
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, TaskManager::refresh_now);
+                }
+            },
+        );
+    }
+
+    /// Kills the selected process and all of its descendants, leaves first.
+    fn end_selected_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((pid, name)) = self.selected_process(cx) else {
+            return;
+        };
+        let mut tree = vec![pid];
+        let mut ix = 0;
+        while let Some(&parent) = tree.get(ix) {
+            let children: Vec<u32> = self
+                .snap
+                .processes
+                .iter()
+                .filter(|p| p.parent == Some(parent) && !tree.contains(&p.pid))
+                .map(|p| p.pid)
+                .collect();
+            tree.extend(children);
+            ix += 1;
+        }
+        let this = cx.entity().downgrade();
+        confirm(
+            window,
+            cx,
+            "Task Manager Warning",
+            format!(
+                "WARNING: Terminating a process tree can cause undesired results including \
+                 loss of data and system instability. The processes will not be given \
+                 the chance to save their state or data before they are terminated. Are \
+                 you sure you want to terminate the process tree of \"{name}\" (PID {pid})?"
+            ),
+            move |_, cx| {
+                for &pid in tree.iter().rev() {
+                    apps::kill(pid, true);
+                }
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, TaskManager::refresh_now);
+                }
+            },
+        );
+    }
+
+    fn set_selected_priority(
+        &mut self,
+        priority: Priority,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((pid, _)) = self.selected_process(cx) else {
+            return;
+        };
+        confirm(
+            window,
+            cx,
+            "Task Manager Warning",
+            "WARNING: Changing the priority class of this process may cause undesired \
+             results including system instability. Are you sure you want to change the \
+             priority class?"
+                .into(),
+            move |window, cx| {
+                if let Err(err) = apps::set_priority(pid, priority) {
+                    let reason = if err.kind() == std::io::ErrorKind::PermissionDenied {
+                        "Access is denied.".to_owned()
+                    } else {
+                        err.to_string()
+                    };
+                    alert(
+                        window,
+                        cx,
+                        "Unable to Change Priority",
+                        format!("The operation could not be completed.\n\n{reason}"),
+                    );
+                }
+            },
+        );
     }
 
     // Rendering ---------------------------------------------------------
@@ -734,7 +965,11 @@ impl TaskManager {
             let (speed, per_core, kernel) = (s.speed, s.per_core, s.show_kernel);
             let f2 = f.clone();
             let f3 = f.clone();
+            // gpui-component opens submenus to the left when origin + max width
+            // overflows the window; the 500px default always does in this
+            // narrow window, so cap it at a realistic width.
             menu.action_context(f.clone())
+                .max_w(px(220.))
                 .menu("Refresh Now", Box::new(RefreshNow))
                 .submenu("Update Speed", window, cx, move |m, _, _| {
                     m.action_context(f2.clone())
@@ -1317,6 +1552,75 @@ fn link_speed(bps: u64) -> String {
         b if b >= 1_000_000 => format!("{} Mbps", b / 1_000_000),
         b => format!("{} Kbps", b / 1_000),
     }
+}
+
+/// An XP Yes/No warning dialog; `on_yes` runs once it has closed.
+fn confirm(
+    window: &mut Window,
+    cx: &mut App,
+    title: &'static str,
+    message: String,
+    on_yes: impl Fn(&mut Window, &mut App) + 'static,
+) {
+    let on_yes = Rc::new(on_yes);
+    window.open_dialog(cx, move |dialog, _, _| {
+        let on_yes = on_yes.clone();
+        message_dialog(
+            dialog,
+            title,
+            message.clone(),
+            vec![
+                xp::button("confirm-yes", "Yes", true, move |_, window, cx| {
+                    window.close_dialog(cx);
+                    on_yes(window, cx);
+                })
+                .into_any_element(),
+                xp::button("confirm-no", "No", true, |_, window, cx| {
+                    window.close_dialog(cx);
+                })
+                .into_any_element(),
+            ],
+        )
+    });
+}
+
+/// An XP error dialog with a single OK button.
+fn alert(window: &mut Window, cx: &mut App, title: &'static str, message: String) {
+    window.open_dialog(cx, move |dialog, _, _| {
+        message_dialog(
+            dialog,
+            title,
+            message.clone(),
+            vec![
+                xp::button("alert-ok", "OK", true, |_, window, cx| {
+                    window.close_dialog(cx);
+                })
+                .into_any_element(),
+            ],
+        )
+    });
+}
+
+fn message_dialog(
+    dialog: Dialog,
+    title: &'static str,
+    message: String,
+    buttons: Vec<AnyElement>,
+) -> Dialog {
+    dialog
+        .title(title)
+        .w(px(400.))
+        .bg(color::face())
+        .rounded_none()
+        .text_color(color::text())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(message)
+                .child(div().flex().justify_center().gap(px(6.)).children(buttons)),
+        )
 }
 
 #[cfg(test)]

@@ -305,9 +305,13 @@ pub fn tab_strip<V: 'static>(
             .rounded_tr(px(2.))
             .on_click(cx.listener(move |this, _, _, cx| on_select(this, ix, cx)))
             .child(
+                // The label's line height exceeds an inactive tab's 18px, so
+                // without clipping the right edges run down past the tab bottom.
                 div()
                     .flex()
                     .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
                     .items_center()
                     .border_r_1()
                     .border_color(color::dark_shadow())

@@ -1,12 +1,18 @@
 //! A generic sortable list view backed by gpui-component's `DataTable`.
 
 use std::cmp::Ordering;
+use std::rc::Rc;
 
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::xp::{self, Bevel, color};
+
+/// Right padding gpui-component reserves in each header cell for a sort
+/// icon: the cell padding of the table's custom `Size`.
+const SORT_ICON_GAP: f32 = 8.0;
 
 /// A sortable cell value.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +48,22 @@ pub struct ColumnSpec {
     pub right: bool,
 }
 
+/// Builds a row's right-click menu from the row's id.
+#[derive(Clone)]
+pub struct RowMenu(Rc<dyn Fn(u64, PopupMenu, &mut Window, &mut App) -> PopupMenu>);
+
+impl RowMenu {
+    pub fn new(f: impl Fn(u64, PopupMenu, &mut Window, &mut App) -> PopupMenu + 'static) -> Self {
+        Self(Rc::new(f))
+    }
+}
+
+impl std::fmt::Debug for RowMenu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RowMenu")
+    }
+}
+
 /// The table delegate shared by every tab.
 #[derive(Debug)]
 pub struct ListView {
@@ -50,6 +72,7 @@ pub struct ListView {
     sort: Option<(usize, ColumnSort)>,
     /// The selected row's id, kept here so cells can draw selected text.
     selected: Option<u64>,
+    row_menu: Option<RowMenu>,
 }
 
 impl ListView {
@@ -60,7 +83,15 @@ impl ListView {
             rows: Vec::new(),
             sort,
             selected: None,
+            row_menu: None,
         }
+    }
+
+    /// Gives the rows a right-click menu.
+    #[must_use]
+    pub fn with_row_menu(mut self, menu: RowMenu) -> Self {
+        self.row_menu = Some(menu);
+        self
     }
 
     /// Records the row at `ix` as selected; call on `TableEvent::SelectRow`.
@@ -97,8 +128,25 @@ pub fn set_rows(
     cx.notify();
 }
 
+/// Selects the row with `id`, or clears the selection when there is none.
+pub fn select_id(
+    state: &mut TableState<ListView>,
+    id: u64,
+    cx: &mut Context<TableState<ListView>>,
+) {
+    state.delegate_mut().selected = Some(id);
+    reselect(state, cx);
+    cx.notify();
+}
+
 /// Moves the table's selection to wherever the selected id now sits.
-fn reselect(state: &mut TableState<ListView>, cx: &mut Context<TableState<ListView>>) {
+///
+/// Also undoes a column selection: the table still selects columns on the
+/// left/right arrow keys even when they are not selectable.
+pub fn reselect(state: &mut TableState<ListView>, cx: &mut Context<TableState<ListView>>) {
+    if state.selected_col().is_some() {
+        state.clear_selection(cx);
+    }
     let id = state.delegate().selected;
     let new_ix = id.and_then(|id| state.delegate().rows.iter().position(|r| r.id == id));
     match new_ix {
@@ -154,11 +202,17 @@ impl TableDelegate for ListView {
             .whitespace_nowrap()
             .overflow_hidden()
             .child(spec.name);
-        div()
-            .id(("th", col_ix))
-            .size_full()
-            .flex()
+        // gpui-component keeps the cell's right padding free for a sort icon
+        // even when the column's own padding is zero, so stretch the button
+        // over that gap to make adjacent header buttons touch.
+        let button = xp::bevel(Bevel::Raised, caption)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right(px(-SORT_ICON_GAP))
             .bg(color::face())
+            .id(("th", col_ix))
             .on_click(cx.listener(move |state, _, _, cx| {
                 let delegate = state.delegate_mut();
                 delegate.sort = Some(match delegate.sort {
@@ -170,8 +224,8 @@ impl TableDelegate for ListView {
                 delegate.apply_sort();
                 reselect(state, cx);
                 cx.notify();
-            }))
-            .child(xp::bevel(Bevel::Raised, caption).flex_1())
+            }));
+        div().relative().size_full().child(button)
     }
 
     fn render_header(
@@ -187,6 +241,19 @@ impl TableDelegate for ListView {
                 .inset_0()
                 .bg(color::face()),
         )
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        match (&self.row_menu, self.rows.get(row_ix)) {
+            (Some(build), Some(row)) => (build.0)(row.id, menu, window, cx),
+            _ => menu,
+        }
     }
 
     fn render_tr(

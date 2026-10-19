@@ -17,7 +17,7 @@ sysinfo = "0.38"
 libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSGeometry", "NSObject"] }
-objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace", "NSWindow", "NSView", "NSButton", "NSControl", "NSResponder", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSImage", "NSColor", "NSBezierPath", "NSMenu", "NSMenuItem", "NSGraphics", "NSCell", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSScreen", "NSWorkspace", "NSWindow", "NSView", "NSButton", "NSControl", "NSResponder", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSImage", "NSColor", "NSBezierPath", "NSMenu", "NSMenuItem", "NSGraphics", "NSCell", "block2"] }
 raw-window-handle = "0.6"
 futures = "0.3"
 block2 = "0.6"
