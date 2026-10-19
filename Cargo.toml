@@ -1,0 +1,51 @@
+[package]
+name = "xp-taskmgr"
+version = "1.0.0"
+edition = "2024"
+authors = ["Enzo Lombardi <enzinol@gmail.com>"]
+description = "A Windows XP style Task Manager for macOS, built with GPUI and gpui-component"
+repository = "https://github.com/aovestdipaperino/xp-taskmgr"
+license = "MIT"
+
+[[bin]]
+name = "xp-taskmgr"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "0.8"
+sysinfo = "0.38"
+libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSGeometry", "NSObject"] }
+objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace", "NSWindow", "NSView", "NSButton", "NSControl", "NSResponder", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSImage", "NSColor", "NSBezierPath", "NSMenu", "NSMenuItem", "NSGraphics", "NSCell", "block2"] }
+raw-window-handle = "0.6"
+futures = "0.3"
+block2 = "0.6"
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+module_name_repetitions = "allow"
+# GPUI idioms: hex color literals, the prelude glob, and long render builders.
+unreadable_literal = "allow"
+wildcard_imports = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+many_single_char_names = "allow"
+type_complexity = "allow"
+# Held GPUI tasks and subscriptions are `_`-prefixed by convention; view
+# methods keep `self` so they can be wired with `cx.listener`.
+used_underscore_binding = "allow"
+unused_self = "allow"
+
+[profile.release]
+lto = "thin"
