@@ -113,6 +113,22 @@ impl ListView {
             }
         });
     }
+
+    fn sort_by_column(&mut self, col_ix: usize) {
+        self.sort = Some(match self.sort {
+            Some((c, ColumnSort::Ascending)) if c == col_ix => (col_ix, ColumnSort::Descending),
+            _ => (col_ix, ColumnSort::Ascending),
+        });
+        self.apply_sort();
+    }
+
+    fn sort_indicator(&self, col_ix: usize) -> Option<&'static str> {
+        match self.sort {
+            Some((c, ColumnSort::Ascending)) if c == col_ix => Some("▲"),
+            Some((c, ColumnSort::Descending)) if c == col_ix => Some("▼"),
+            _ => None,
+        }
+    }
 }
 
 /// Replaces a list's rows, keeping the selected row selected.
@@ -176,8 +192,8 @@ impl TableDelegate for ListView {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        // Sorting is driven by our own header buttons: XP's Task Manager draws
-        // no sort arrows, so the table's built-in sort affordance stays off.
+        // Our header buttons draw Classic sort triangles instead of the
+        // table's built-in modern sort controls.
         let spec = &self.columns[col_ix];
         let col = Column::new(spec.name, spec.name)
             .width(px(spec.width))
@@ -195,17 +211,28 @@ impl TableDelegate for ListView {
         let caption = div()
             .flex()
             .flex_1()
+            .min_w_0()
             .items_center()
+            .gap(px(4.))
             .px(px(4.))
-            .when(spec.right, gpui_kit::Styled::justify_end)
             .text_color(color::text())
-            .whitespace_nowrap()
             .overflow_hidden()
-            .child(spec.name);
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .when(spec.right, gpui_kit::Styled::text_right)
+                    .child(spec.name),
+            )
+            .when_some(self.sort_indicator(col_ix), |el, indicator| {
+                el.child(div().flex_shrink_0().text_size(px(8.)).child(indicator))
+            });
         // gpui-component keeps the cell's right padding free for a sort icon
         // even when the column's own padding is zero, so stretch the button
         // over that gap to make adjacent header buttons touch.
-        let button = xp::bevel(Bevel::Raised, caption)
+        let button = div()
+            .flex()
             .absolute()
             .top_0()
             .bottom_0()
@@ -213,15 +240,11 @@ impl TableDelegate for ListView {
             .right(px(-SORT_ICON_GAP))
             .bg(color::face())
             .id(("th", col_ix))
+            .child(xp::PressableBevel {
+                caption: caption.into_any_element(),
+            })
             .on_click(cx.listener(move |state, _, _, cx| {
-                let delegate = state.delegate_mut();
-                delegate.sort = Some(match delegate.sort {
-                    Some((c, ColumnSort::Ascending)) if c == col_ix => {
-                        (col_ix, ColumnSort::Descending)
-                    }
-                    _ => (col_ix, ColumnSort::Ascending),
-                });
-                delegate.apply_sort();
+                state.delegate_mut().sort_by_column(col_ix);
                 reselect(state, cx);
                 cx.notify();
             }));
@@ -285,6 +308,8 @@ impl TableDelegate for ListView {
             .cloned()
             .unwrap_or_default();
         div()
+            .w_full()
+            .min_w_0()
             .px(px(4.))
             .whitespace_nowrap()
             .overflow_hidden()
@@ -303,5 +328,79 @@ impl TableDelegate for ListView {
             .and_then(|r| r.cells.get(col_ix))
             .map(ToString::to_string)
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(sort: Option<(usize, ColumnSort)>) -> ListView {
+        let mut list = ListView::new(
+            vec![
+                ColumnSpec {
+                    name: "Name",
+                    width: 100.,
+                    right: false,
+                },
+                ColumnSpec {
+                    name: "CPU",
+                    width: 50.,
+                    right: true,
+                },
+            ],
+            sort,
+        );
+        list.rows = vec![
+            Row {
+                id: 1,
+                cells: vec![],
+                keys: vec![Key::Text("beta".into()), Key::Num(2.)],
+            },
+            Row {
+                id: 2,
+                cells: vec![],
+                keys: vec![Key::Text("Alpha".into()), Key::Num(10.)],
+            },
+        ];
+        list
+    }
+
+    #[test]
+    fn indicator_tracks_sorted_column_and_direction() {
+        let mut list = list(Some((0, ColumnSort::Ascending)));
+        list.apply_sort();
+        assert_eq!(list.rows[0].id, 2);
+        assert_eq!(list.sort_indicator(0), Some("▲"));
+        assert_eq!(list.sort_indicator(1), None);
+
+        list.sort_by_column(0);
+        assert_eq!(list.rows[0].id, 1);
+        assert_eq!(list.sort_indicator(0), Some("▼"));
+
+        list.sort_by_column(0);
+        assert_eq!(list.rows[0].id, 2);
+        assert_eq!(list.sort_indicator(0), Some("▲"));
+
+        list.sort_by_column(1);
+        assert_eq!(list.rows[0].id, 1);
+        assert_eq!(list.sort_indicator(0), None);
+        assert_eq!(list.sort_indicator(1), Some("▲"));
+
+        list.sort_by_column(1);
+        assert_eq!(list.rows[0].id, 2);
+        assert_eq!(list.sort_indicator(1), Some("▼"));
+    }
+
+    #[test]
+    fn unsorted_columns_have_no_indicator() {
+        for sort in [None, Some((0, ColumnSort::Default))] {
+            let mut list = list(sort);
+            assert_eq!(list.sort_indicator(0), None);
+            assert_eq!(list.sort_indicator(1), None);
+            list.sort_by_column(0);
+            assert_eq!(list.rows[0].id, 2);
+            assert_eq!(list.sort_indicator(0), Some("▲"));
+        }
     }
 }

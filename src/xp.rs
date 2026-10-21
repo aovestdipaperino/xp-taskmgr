@@ -173,8 +173,8 @@ pub fn button(
 
 /// Renders raised or pressed depending on the hover/active state of the parent.
 #[derive(IntoElement)]
-struct PressableBevel {
-    caption: AnyElement,
+pub(crate) struct PressableBevel {
+    pub(crate) caption: AnyElement,
 }
 
 impl RenderOnce for PressableBevel {
