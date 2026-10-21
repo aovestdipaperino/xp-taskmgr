@@ -113,6 +113,22 @@ impl ListView {
             }
         });
     }
+
+    fn sort_by_column(&mut self, col_ix: usize) {
+        self.sort = Some(match self.sort {
+            Some((c, ColumnSort::Ascending)) if c == col_ix => (col_ix, ColumnSort::Descending),
+            _ => (col_ix, ColumnSort::Ascending),
+        });
+        self.apply_sort();
+    }
+
+    fn sort_indicator(&self, col_ix: usize) -> Option<ColumnSort> {
+        match self.sort {
+            Some((c, ColumnSort::Ascending)) if c == col_ix => Some(ColumnSort::Ascending),
+            Some((c, ColumnSort::Descending)) if c == col_ix => Some(ColumnSort::Descending),
+            _ => None,
+        }
+    }
 }
 
 /// Replaces a list's rows, keeping the selected row selected.
@@ -176,8 +192,8 @@ impl TableDelegate for ListView {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        // Sorting is driven by our own header buttons: XP's Task Manager draws
-        // no sort arrows, so the table's built-in sort affordance stays off.
+        // Our header buttons draw Classic sort triangles instead of the
+        // table's built-in modern sort controls.
         let spec = &self.columns[col_ix];
         let col = Column::new(spec.name, spec.name)
             .width(px(spec.width))
@@ -192,36 +208,93 @@ impl TableDelegate for ListView {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let spec = &self.columns[col_ix];
+        // Bound the text to the actual cell, independently of its intrinsic
+        // width. A flex child alone can grow to fit the caption and never elide.
         let caption = div()
+            .id(("th-caption", col_ix))
+            .absolute()
+            .inset(px(2.))
             .flex()
-            .flex_1()
+            .min_w_0()
             .items_center()
-            .px(px(4.))
-            .when(spec.right, gpui_kit::Styled::justify_end)
+            .gap(px(4.))
+            .px(px(3.))
             .text_color(color::text())
-            .whitespace_nowrap()
             .overflow_hidden()
-            .child(spec.name);
-        // gpui-component keeps the cell's right padding free for a sort icon
-        // even when the column's own padding is zero, so stretch the button
-        // over that gap to make adjacent header buttons touch.
-        let button = xp::bevel(Bevel::Raised, caption)
+            .group_active("xp-header", |s| s.top(px(3.)).left(px(3.)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .when(spec.right, gpui_kit::Styled::text_right)
+                    .child(spec.name),
+            )
+            .when_some(self.sort_indicator(col_ix), |el, direction| {
+                el.child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, (), window, _| {
+                            // Classic list headers use a muted 7 x 4 pixel
+                            // triangle, not a font-dependent Unicode glyph.
+                            for row in 0..4 {
+                                let inset = if direction == ColumnSort::Ascending {
+                                    3 - row
+                                } else {
+                                    row
+                                };
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        bounds.origin + point(px(inset as f32), px(row as f32)),
+                                        size(px((7 - inset * 2) as f32), px(1.)),
+                                    ),
+                                    rgb(0xACA899),
+                                ));
+                            }
+                        },
+                    )
+                    .w(px(7.))
+                    .h(px(4.))
+                    .flex_shrink_0(),
+                )
+            });
+        // The group must be on the stateful click target so GPUI can track
+        // its active state. Keep the whole cell clickable, including the icon.
+        let button = div()
+            .id(("th", col_ix))
+            .group("xp-header")
             .absolute()
             .top_0()
             .bottom_0()
             .left_0()
             .right(px(-SORT_ICON_GAP))
             .bg(color::face())
-            .id(("th", col_ix))
+            .hover(|s| s.bg(rgb(0xE2DED6)))
+            .active(|s| s.bg(color::face()))
+            .child(
+                div()
+                    .id(("th-top-left", col_ix))
+                    .absolute()
+                    .inset_0()
+                    .border_t_1()
+                    .border_l_1()
+                    .border_color(color::highlight())
+                    .group_active("xp-header", |s| s.border_color(color::shadow())),
+            )
+            .child(
+                div()
+                    .id(("th-bottom-right", col_ix))
+                    .absolute()
+                    .inset_0()
+                    .border_b_1()
+                    .border_r_1()
+                    .border_color(color::shadow())
+                    .group_active("xp-header", |s| s.border_color(color::highlight())),
+            )
+            .child(caption)
             .on_click(cx.listener(move |state, _, _, cx| {
-                let delegate = state.delegate_mut();
-                delegate.sort = Some(match delegate.sort {
-                    Some((c, ColumnSort::Ascending)) if c == col_ix => {
-                        (col_ix, ColumnSort::Descending)
-                    }
-                    _ => (col_ix, ColumnSort::Ascending),
-                });
-                delegate.apply_sort();
+                cx.stop_propagation();
+                state.delegate_mut().sort_by_column(col_ix);
                 reselect(state, cx);
                 cx.notify();
             }));
@@ -285,6 +358,8 @@ impl TableDelegate for ListView {
             .cloned()
             .unwrap_or_default();
         div()
+            .w_full()
+            .min_w_0()
             .px(px(4.))
             .whitespace_nowrap()
             .overflow_hidden()
@@ -303,5 +378,81 @@ impl TableDelegate for ListView {
             .and_then(|r| r.cells.get(col_ix))
             .map(ToString::to_string)
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Prefer Rust's unit-test attribute over the GPUI test macro.
+    use core::prelude::v1::test;
+
+    fn list(sort: Option<(usize, ColumnSort)>) -> ListView {
+        let mut list = ListView::new(
+            vec![
+                ColumnSpec {
+                    name: "Name",
+                    width: 100.,
+                    right: false,
+                },
+                ColumnSpec {
+                    name: "CPU",
+                    width: 50.,
+                    right: true,
+                },
+            ],
+            sort,
+        );
+        list.rows = vec![
+            Row {
+                id: 1,
+                cells: vec![],
+                keys: vec![Key::Text("beta".into()), Key::Num(2.)],
+            },
+            Row {
+                id: 2,
+                cells: vec![],
+                keys: vec![Key::Text("Alpha".into()), Key::Num(10.)],
+            },
+        ];
+        list
+    }
+
+    #[test]
+    fn indicator_tracks_sorted_column_and_direction() {
+        let mut list = list(Some((0, ColumnSort::Ascending)));
+        list.apply_sort();
+        assert_eq!(list.rows[0].id, 2);
+        assert_eq!(list.sort_indicator(0), Some(ColumnSort::Ascending));
+        assert_eq!(list.sort_indicator(1), None);
+
+        list.sort_by_column(0);
+        assert_eq!(list.rows[0].id, 1);
+        assert_eq!(list.sort_indicator(0), Some(ColumnSort::Descending));
+
+        list.sort_by_column(0);
+        assert_eq!(list.rows[0].id, 2);
+        assert_eq!(list.sort_indicator(0), Some(ColumnSort::Ascending));
+
+        list.sort_by_column(1);
+        assert_eq!(list.rows[0].id, 1);
+        assert_eq!(list.sort_indicator(0), None);
+        assert_eq!(list.sort_indicator(1), Some(ColumnSort::Ascending));
+
+        list.sort_by_column(1);
+        assert_eq!(list.rows[0].id, 2);
+        assert_eq!(list.sort_indicator(1), Some(ColumnSort::Descending));
+    }
+
+    #[test]
+    fn unsorted_columns_have_no_indicator() {
+        for sort in [None, Some((0, ColumnSort::Default))] {
+            let mut list = list(sort);
+            assert_eq!(list.sort_indicator(0), None);
+            assert_eq!(list.sort_indicator(1), None);
+            list.sort_by_column(0);
+            assert_eq!(list.rows[0].id, 2);
+            assert_eq!(list.sort_indicator(0), Some(ColumnSort::Ascending));
+        }
     }
 }
