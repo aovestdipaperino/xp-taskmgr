@@ -8,6 +8,7 @@ mod stats;
 mod table;
 mod taskmgr;
 mod tray;
+mod update;
 mod xp;
 
 use gpui_kit::component::{Theme, ThemeMode};

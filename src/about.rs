@@ -11,6 +11,7 @@ use gpui_kit::*;
 
 use crate::mac;
 use crate::taskmgr::thousands;
+use crate::update;
 use crate::xp::{self, Bevel, color};
 
 const LICENSE_URL: &str = "https://opensource.org/license/mit";
@@ -48,16 +49,41 @@ impl Info {
     }
 }
 
+/// Where the update check has got to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Status {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(String),
+    Installing,
+    Failed(String),
+}
+
+impl Status {
+    fn message(&self) -> String {
+        match self {
+            Self::Idle => String::new(),
+            Self::Checking => "Checking for updates...".into(),
+            Self::UpToDate => "You have the latest version.".into(),
+            Self::Available(v) => format!("Version {v} is available."),
+            Self::Installing => "Downloading and installing...".into(),
+            Self::Failed(e) => e.clone(),
+        }
+    }
+}
+
 /// The About window's root view.
 #[derive(Debug)]
 pub struct AboutBox {
     focus: FocusHandle,
     info: Info,
+    status: Status,
 }
 
 /// Opens the About box centered on screen.
 pub fn open(memory_kb: u64, cx: &mut App) -> Option<AnyWindowHandle> {
-    let bounds = Bounds::centered(None, size(px(486.), px(330.)), cx);
+    let bounds = Bounds::centered(None, size(px(486.), px(372.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -78,6 +104,7 @@ pub fn open(memory_kb: u64, cx: &mut App) -> Option<AnyWindowHandle> {
             AboutBox {
                 focus,
                 info: Info::gather(memory_kb),
+                status: Status::Idle,
             }
         })
     })
@@ -171,6 +198,54 @@ fn banner() -> impl IntoElement {
         )
 }
 
+impl AboutBox {
+    /// The update button: check first, then install what the check found.
+    fn on_update_click(&mut self, cx: &mut Context<Self>) {
+        match self.status.clone() {
+            Status::Checking | Status::Installing => {}
+            Status::Available(version) => {
+                self.status = Status::Installing;
+                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { update::install(&version) })
+                        .await;
+                    let _ = this.update(cx, |t, cx| match result {
+                        Ok(()) => cx.quit(),
+                        Err(e) => {
+                            t.status = Status::Failed(e);
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+            Status::Idle | Status::UpToDate | Status::Failed(_) => {
+                self.status = Status::Checking;
+                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { update::latest_version() })
+                        .await;
+                    let _ = this.update(cx, |t, cx| {
+                        t.status = match result {
+                            Ok(v) if update::is_newer(&v, env!("CARGO_PKG_VERSION")) => {
+                                Status::Available(v)
+                            }
+                            Ok(_) => Status::UpToDate,
+                            Err(e) => Status::Failed(e),
+                        };
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+}
+
 impl Render for AboutBox {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let info = &self.info;
@@ -187,6 +262,19 @@ impl Render for AboutBox {
             })
             .child("MIT License");
 
+        let open_url = |url: &'static str| {
+            move |_: &ClickEvent, _: &mut Window, _: &mut App| {
+                let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+            }
+        };
+        let github = div()
+            .id("github")
+            .text_color(rgb(0x0000FF))
+            .underline()
+            .cursor_pointer()
+            .on_click(open_url(update::REPO_URL))
+            .child(update::REPO_URL);
+
         let text = div()
             .flex()
             .flex_col()
@@ -200,7 +288,10 @@ impl Render for AboutBox {
             .child(div().flex().child("the ").child(link).child(" to:"))
             .child(div().pl(px(16.)).child(info.owner.clone()))
             .child(div().pl(px(16.)).child(info.computer.clone()))
+            .child(div().h(px(10.)))
+            .child(div().flex().child("Project: ").child(github))
             .child(div().flex_1())
+            .child(div().pb(px(6.)).child(self.status.message()))
             // Etched separator.
             .child(div().h(px(1.)).bg(color::shadow()))
             .child(div().h(px(1.)).bg(color::highlight()))
@@ -232,8 +323,20 @@ impl Render for AboutBox {
             .flex()
             .flex_none()
             .justify_end()
+            .gap(px(8.))
             .px(px(12.))
             .py(px(10.))
+            .child(xp::button(
+                "about-update",
+                match &self.status {
+                    Status::Checking => "Checking...".to_owned(),
+                    Status::Installing => "Installing...".to_owned(),
+                    Status::Available(v) => format!("Update to {v}"),
+                    _ => "Check for Updates".to_owned(),
+                },
+                !matches!(self.status, Status::Checking | Status::Installing),
+                cx.listener(|this, _, _, cx| this.on_update_click(cx)),
+            ))
             .child(xp::button("about-ok", "OK", true, move |_, window, cx| {
                 close(window, cx);
             }));

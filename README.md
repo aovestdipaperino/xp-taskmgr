@@ -16,6 +16,7 @@ The idea comes from [TaskMgr98](https://github.com/jankammerath/TaskMgr98) by Ja
 - **Tiny footprint mode**: double-click the Performance graphs to hide everything but the CPU charts; double-click again to restore.
 - **Tray meter**: the CPU bar meter lives in the menu bar. With Options > Hide When Minimized (on by default), minimizing leaves only the meter, and its menu restores the window.
 - **The rest of XP**: Windows Classic styling with square corners, the File/Options/View/Help menus, update speeds, kernel times, Always On Top, and an About box.
+- **Self-update**: the About box links to the GitHub project and has a **Check for Updates** button. It looks up the latest release and, if it is newer, **Update to X** downloads the DMG, replaces the app in place and relaunches it.
 
 ![About box](docs/about.png)
 
@@ -35,7 +36,7 @@ Thread and handle totals only include processes the app is allowed to inspect.
 
 ## Install
 
-Download `XP-Task-Manager-<version>.dmg` from [Releases](https://github.com/aovestdipaperino/xp-taskmgr/releases) and drag **Task Manager** to Applications. The app is ad-hoc signed, not notarized, so on first launch right-click it and choose **Open**.
+Download `XP-Task-Manager-<version>.dmg` from [Releases](https://github.com/aovestdipaperino/xp-taskmgr/releases) and drag **Task Manager** to Applications. The app is ad-hoc signed, not notarized, so on first launch right-click it and choose **Open**. After that, use **Help > About Task Manager > Check for Updates** to upgrade. In-place updates need the app to be in a folder you can write to and to be running from its `.app` bundle (not `cargo run`).
 
 ## Build
 
