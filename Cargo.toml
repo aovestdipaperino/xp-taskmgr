@@ -1,6 +1,6 @@
 [package]
 name = "xp-taskmgr"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 description = "A Windows XP style Task Manager for macOS, built with GPUI and gpui-component"

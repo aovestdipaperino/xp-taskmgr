@@ -29,9 +29,8 @@ pub fn history(series: Vec<Series>, tick: usize) -> impl IntoElement {
 
 /// One history graph per CPU, tiled like XP's "One Graph Per CPU".
 ///
-/// The grid shape is picked at paint time from the real bounds so every
-/// cell comes out as close to square as possible: two CPUs sit side by side
-/// in a wide pane and stack in a tall one, many CPUs form rows.
+/// Every row holds the same number of graphs, with at least as many
+/// columns as rows: 8 CPUs tile as 4x2, 9 as 3x3, 12 as 4x3.
 pub fn history_grid(cores: Vec<Vec<f32>>, tick: usize) -> impl IntoElement {
     canvas(
         |_, _, _| {},
@@ -43,7 +42,7 @@ pub fn history_grid(cores: Vec<Vec<f32>>, tick: usize) -> impl IntoElement {
             // Gray gaps between the boxes, as in the multi-CPU layout.
             window.paint_quad(fill(bounds, color::face()));
             let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-            let (cols, rows) = grid_shape(n, w, h);
+            let (cols, rows) = grid_shape(n);
             let cell_w = (w - GAP * (cols - 1) as f32) / cols as f32;
             let cell_h = (h - GAP * (rows - 1) as f32) / rows as f32;
             for (ix, values) in cores.iter().enumerate() {
@@ -77,19 +76,13 @@ pub fn history_grid(cores: Vec<Vec<f32>>, tick: usize) -> impl IntoElement {
 /// Gray gap between neighbouring per-CPU boxes.
 const GAP: f32 = 4.0;
 
-/// Columns and rows for `n` cells in a `w` x `h` area, cells nearest square.
-fn grid_shape(n: usize, w: f32, h: f32) -> (usize, usize) {
-    (1..=n)
-        .map(|cols| (cols, n.div_ceil(cols)))
-        .min_by(|a, b| {
-            let badness = |(c, r): (usize, usize)| {
-                let aspect = (w / c as f32) / (h / r as f32);
-                // Penalize empty cells so 18 CPUs prefer 6x3 over 5x4.
-                aspect.max(1.0 / aspect) * (1.0 + (c * r - n) as f32 / n as f32)
-            };
-            badness(*a).total_cmp(&badness(*b))
-        })
-        .unwrap_or((1, 1))
+/// Columns and rows for `n` cells: `cols * rows == n` with `cols >= rows`,
+/// as close to square as that allows.
+fn grid_shape(n: usize) -> (usize, usize) {
+    let cols = (1..=n.max(1))
+        .find(|&c| c * c >= n && n.is_multiple_of(c))
+        .unwrap_or(1);
+    (cols, n.max(1) / cols)
 }
 
 fn paint_history(window: &mut Window, bounds: Bounds<Pixels>, series: &[Series], tick: usize) {
@@ -208,12 +201,14 @@ mod tests {
     use super::grid_shape;
 
     #[test]
-    fn picks_square_cells() {
-        // Wide pane: two CPUs side by side; tall pane: stacked.
-        assert_eq!(grid_shape(2, 600., 180.), (2, 1));
-        assert_eq!(grid_shape(2, 400., 500.), (1, 2));
-        assert_eq!(grid_shape(1, 600., 180.), (1, 1));
-        let (c, r) = grid_shape(18, 600., 180.);
-        assert!(c * r >= 18 && c >= r);
+    fn fills_every_row() {
+        assert_eq!(grid_shape(1), (1, 1));
+        assert_eq!(grid_shape(2), (2, 1));
+        assert_eq!(grid_shape(4), (2, 2));
+        assert_eq!(grid_shape(8), (4, 2));
+        assert_eq!(grid_shape(10), (5, 2));
+        assert_eq!(grid_shape(12), (4, 3));
+        assert_eq!(grid_shape(16), (4, 4));
+        assert_eq!(grid_shape(18), (6, 3));
     }
 }
