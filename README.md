@@ -11,6 +11,7 @@ The idea comes from [TaskMgr98](https://github.com/jankammerath/TaskMgr98) by Ja
 - **Applications**: running apps, with End Task, Switch To and New Task (opens an app, file, folder or URL).
 - **Processes**: image name, PID, user, CPU and memory, sortable by column, with "Show processes from all users" and End Process.
 - **Performance**: CPU and page file meters, scrolling history graphs (one graph per CPU by default, tiled to fit), and the Totals, Physical Memory, Commit Charge and Kernel Memory counters.
+- **GPU**: GPU usage and GPU memory meters with history graphs, renderer and tiler utilization, memory in use and allocated, and the GPU model and core count, read from IOKit without special privileges.
 - **Networking**: a self-scaling utilization graph per adapter, plus link speed and state.
 - **Users**: logged-in sessions.
 - **Tiny footprint mode**: double-click the Performance graphs to hide everything but the CPU charts; double-click again to restore.

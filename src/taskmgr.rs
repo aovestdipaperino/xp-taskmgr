@@ -1,4 +1,4 @@
-//! The Task Manager window: title bar, menus, the five tabs and status bar.
+//! The Task Manager window: title bar, menus, the six tabs and status bar.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -127,10 +127,11 @@ fn process_menu(focus: FocusHandle) -> RowMenu {
     })
 }
 
-const TABS: [&str; 5] = [
+const TABS: [&str; 6] = [
     "Applications",
     "Processes",
     "Performance",
+    "GPU",
     "Networking",
     "Users",
 ];
@@ -166,6 +167,8 @@ pub struct TaskManager {
     kernel_hist: Vec<f32>,
     core_hist: Vec<Vec<f32>>,
     commit_hist: Vec<f32>,
+    gpu_hist: Vec<f32>,
+    gpu_mem_hist: Vec<f32>,
     net_hist: HashMap<String, Vec<f32>>,
     speed: Speed,
     per_core: bool,
@@ -277,13 +280,15 @@ impl TaskManager {
                 .ok()
                 .and_then(|t| t.parse().ok())
                 .unwrap_or(2)
-                .min(4),
+                .min(TABS.len() - 1),
             snap: Snapshot::default(),
             tick: 0,
             cpu_hist: Vec::new(),
             kernel_hist: Vec::new(),
             core_hist: Vec::new(),
             commit_hist: Vec::new(),
+            gpu_hist: Vec::new(),
+            gpu_mem_hist: Vec::new(),
             net_hist: HashMap::new(),
             speed: Speed::Normal,
             // XP defaults to one graph per CPU on multiprocessor machines.
@@ -409,6 +414,12 @@ impl TaskManager {
         }
         let commit = snap.commit_total as f32 / snap.commit_limit.max(1) as f32;
         push(&mut self.commit_hist, commit);
+        if let Some(gpu) = snap.gpus.first() {
+            push(&mut self.gpu_hist, gpu.device / 100.0);
+            // Apple GPUs share system memory, so it is the natural scale.
+            let total = (snap.phys_total * 1024).max(1);
+            push(&mut self.gpu_mem_hist, gpu.mem_in_use as f32 / total as f32);
+        }
         for a in &snap.adapters {
             push(
                 self.net_hist.entry(a.device.clone()).or_default(),
@@ -1118,49 +1129,6 @@ impl TaskManager {
             self.tick,
         );
 
-        let graph_row = |meter_title: &'static str,
-                         meter: AnyElement,
-                         history_title: &'static str,
-                         history: AnyElement,
-                         per_cpu_grid: bool| {
-            div()
-                .flex()
-                .flex_1()
-                .min_h(px(80.))
-                .gap(px(10.))
-                .child(xp::frame(meter_title, xp::bevel(Bevel::Sunken, meter).flex_1()).w(px(84.)))
-                .child(
-                    xp::frame(
-                        history_title,
-                        // The per-CPU grid draws a sunken box per graph itself.
-                        if per_cpu_grid {
-                            div().flex().flex_col().flex_1().child(history)
-                        } else {
-                            xp::bevel(Bevel::Sunken, history).flex_1()
-                        },
-                    )
-                    .flex_1(),
-                )
-        };
-
-        let stat_frame = |title: &'static str, rows: [(&'static str, u64); 3]| {
-            xp::frame(
-                title,
-                div()
-                    .flex()
-                    .flex_col()
-                    .children(rows.into_iter().map(|(k, v)| {
-                        div()
-                            .flex()
-                            .justify_between()
-                            .line_height(px(16.))
-                            .child(k)
-                            .child(v.to_string())
-                    })),
-            )
-            .flex_1()
-        };
-
         let cpu_row = graph_row(
             "CPU Usage",
             graph::meter(
@@ -1205,17 +1173,17 @@ impl TaskManager {
                     .child(stat_frame(
                         "Totals",
                         [
-                            ("Handles", s.handles),
-                            ("Threads", s.threads),
-                            ("Processes", s.processes.len() as u64),
+                            ("Handles", s.handles.to_string()),
+                            ("Threads", s.threads.to_string()),
+                            ("Processes", s.processes.len().to_string()),
                         ],
                     ))
                     .child(stat_frame(
                         "Physical Memory (K)",
                         [
-                            ("Total", s.phys_total),
-                            ("Available", s.phys_available),
-                            ("System Cache", s.system_cache),
+                            ("Total", s.phys_total.to_string()),
+                            ("Available", s.phys_available.to_string()),
+                            ("System Cache", s.system_cache.to_string()),
                         ],
                     )),
             )
@@ -1226,20 +1194,105 @@ impl TaskManager {
                     .child(stat_frame(
                         "Commit Charge (K)",
                         [
-                            ("Total", s.commit_total),
-                            ("Limit", s.commit_limit),
-                            ("Peak", s.commit_peak),
+                            ("Total", s.commit_total.to_string()),
+                            ("Limit", s.commit_limit.to_string()),
+                            ("Peak", s.commit_peak.to_string()),
                         ],
                     ))
                     .child(stat_frame(
                         "Kernel Memory (K)",
                         [
-                            ("Total", s.kernel_paged + s.kernel_nonpaged),
-                            ("Paged", s.kernel_paged),
-                            ("Nonpaged", s.kernel_nonpaged),
+                            ("Total", (s.kernel_paged + s.kernel_nonpaged).to_string()),
+                            ("Paged", s.kernel_paged.to_string()),
+                            ("Nonpaged", s.kernel_nonpaged.to_string()),
                         ],
                     )),
             )
+            .into_any_element()
+    }
+
+    fn render_gpu(&self) -> AnyElement {
+        let Some(gpu) = self.snap.gpus.first() else {
+            return div()
+                .flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .child("No GPU statistics are available.")
+                .into_any_element();
+        };
+        let kib = |b: u64| b / 1024;
+        let mem_fraction = gpu.mem_in_use as f32 / (self.snap.phys_total * 1024).max(1) as f32;
+        let history = |values: &[f32], color: Hsla| {
+            graph::history(
+                vec![Series {
+                    values: values.to_vec(),
+                    color,
+                }],
+                self.tick,
+            )
+            .into_any_element()
+        };
+        let cores = if gpu.cores == 0 {
+            "-".to_owned()
+        } else {
+            gpu.cores.to_string()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .gap(px(6.))
+            .px(px(4.))
+            .child(graph_row(
+                "GPU Usage",
+                graph::meter(
+                    gpu.device / 100.0,
+                    format!("{} %", gpu.device.round() as u32),
+                )
+                .into_any_element(),
+                "GPU Usage History",
+                history(&self.gpu_hist, color::graph_line()),
+                false,
+            ))
+            .child(graph_row(
+                "GPU Memory",
+                graph::meter(mem_fraction, format!("{} MB", gpu.mem_in_use >> 20))
+                    .into_any_element(),
+                "GPU Memory Usage History",
+                history(&self.gpu_mem_hist, color::graph_commit()),
+                false,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(14.))
+                    .child(stat_frame(
+                        "Utilization (%)",
+                        [
+                            ("Device", format!("{}", gpu.device.round() as u32)),
+                            ("Renderer", format!("{}", gpu.renderer.round() as u32)),
+                            ("Tiler", format!("{}", gpu.tiler.round() as u32)),
+                        ],
+                    ))
+                    .child(stat_frame(
+                        "GPU Memory (K)",
+                        [
+                            ("In Use", kib(gpu.mem_in_use).to_string()),
+                            ("Allocated", kib(gpu.mem_alloc).to_string()),
+                            ("System Total", self.snap.phys_total.to_string()),
+                        ],
+                    )),
+            )
+            .child(div().flex().gap(px(14.)).child(stat_frame(
+                "Adapter",
+                [
+                    ("Model", gpu.model.clone()),
+                    ("Cores", cores),
+                    ("Recoveries", gpu.recoveries.to_string()),
+                ],
+            )))
             .into_any_element()
     }
 
@@ -1383,7 +1436,8 @@ impl Render for TaskManager {
             0 => self.render_applications(cx).into_any_element(),
             1 => self.render_processes(cx).into_any_element(),
             2 => self.render_performance(),
-            3 => self.render_networking().into_any_element(),
+            3 => self.render_gpu(),
+            4 => self.render_networking().into_any_element(),
             _ => self.render_users().into_any_element(),
         };
 
@@ -1493,6 +1547,53 @@ impl Render for TaskManager {
             .text_size(px(11.5))
             .child(xp::bevel(Bevel::Raised, content).size_full())
     }
+}
+
+/// A meter box beside a history graph, as in the Performance tab's rows.
+fn graph_row(
+    meter_title: &'static str,
+    meter: AnyElement,
+    history_title: &'static str,
+    history: AnyElement,
+    per_cpu_grid: bool,
+) -> Div {
+    div()
+        .flex()
+        .flex_1()
+        .min_h(px(80.))
+        .gap(px(10.))
+        .child(xp::frame(meter_title, xp::bevel(Bevel::Sunken, meter).flex_1()).w(px(84.)))
+        .child(
+            xp::frame(
+                history_title,
+                // The per-CPU grid draws a sunken box per graph itself.
+                if per_cpu_grid {
+                    div().flex().flex_col().flex_1().child(history)
+                } else {
+                    xp::bevel(Bevel::Sunken, history).flex_1()
+                },
+            )
+            .flex_1(),
+        )
+}
+
+/// A titled frame of three label and value lines.
+fn stat_frame(title: &'static str, rows: [(&'static str, String); 3]) -> impl IntoElement {
+    xp::frame(
+        title,
+        div()
+            .flex()
+            .flex_col()
+            .children(rows.into_iter().map(|(k, v)| {
+                div()
+                    .flex()
+                    .justify_between()
+                    .line_height(px(16.))
+                    .child(k)
+                    .child(v)
+            })),
+    )
+    .flex_1()
 }
 
 /// The app icon, shown small in the caption like XP's window icon.

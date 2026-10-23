@@ -1,4 +1,4 @@
-//! System sampling: CPU, memory, processes, network adapters and users.
+//! System sampling: CPU, GPU, memory, processes, network adapters and users.
 //!
 //! macOS does not have Windows concepts like a page file or a commit charge,
 //! so this module maps the closest Darwin equivalents onto the XP vocabulary:
@@ -17,6 +17,8 @@ use sysinfo::{
     CpuRefreshKind, MemoryRefreshKind, Networks, ProcessRefreshKind, ProcessesToUpdate,
     RefreshKind, System, Users,
 };
+
+use crate::gpu::{self, GpuInfo};
 
 /// One row of the Processes tab.
 #[derive(Debug, Clone)]
@@ -70,6 +72,7 @@ pub struct Snapshot {
     pub cpu_total: f32,
     pub cpu_kernel: f32,
     pub per_cpu: Vec<f32>,
+    pub gpus: Vec<GpuInfo>,
     pub processes: Vec<ProcessInfo>,
     pub handles: u64,
     pub threads: u64,
@@ -192,6 +195,7 @@ impl Sampler {
             cpu_total,
             cpu_kernel,
             per_cpu,
+            gpus: gpu::sample(),
             processes,
             handles,
             threads,

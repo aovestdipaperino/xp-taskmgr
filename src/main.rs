@@ -2,6 +2,7 @@
 
 mod about;
 mod apps;
+mod gpu;
 mod graph;
 mod mac;
 mod stats;
