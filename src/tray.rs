@@ -2,6 +2,8 @@
 //!
 //! XP's Task Manager put a tiny green bar meter in the tray showing current
 //! CPU usage, with a "CPU Usage: N%" tooltip and a menu to restore the window.
+//! Here the icon holds two meters side by side, CPU on the left and GPU on
+//! the right.
 
 use block2::RcBlock;
 use futures::channel::mpsc::UnboundedSender;
@@ -62,11 +64,13 @@ pub struct Tray {
     item: Retained<NSStatusItem>,
     _target: Retained<TrayTarget>,
     _menu: Retained<NSMenu>,
-    last_percent: Option<u32>,
+    last: Option<(u32, u32)>,
 }
 
-/// Width and height of the meter image in points.
-const ICON_W: f64 = 10.0;
+/// Width of one meter, the gap between meters, and the image height in points.
+const METER_W: f64 = 10.0;
+const GAP: f64 = 2.0;
+const ICON_W: f64 = METER_W * 2.0 + GAP;
 const ICON_H: f64 = 16.0;
 
 impl Tray {
@@ -101,26 +105,29 @@ impl Tray {
             item,
             _target: target,
             _menu: menu,
-            last_percent: None,
+            last: None,
         };
-        tray.set_cpu(0.0);
+        tray.set_usage(0.0, 0.0);
         Some(tray)
     }
 
-    /// Redraws the meter for a CPU usage in percent.
-    pub fn set_cpu(&mut self, percent: f32) {
-        let percent = percent.round().clamp(0.0, 100.0) as u32;
-        if self.last_percent == Some(percent) {
+    /// Redraws both meters for CPU and GPU usage in percent.
+    pub fn set_usage(&mut self, cpu: f32, gpu: f32) {
+        let pct = |v: f32| v.round().clamp(0.0, 100.0) as u32;
+        let (cpu, gpu) = (pct(cpu), pct(gpu));
+        if self.last == Some((cpu, gpu)) {
             return;
         }
-        self.last_percent = Some(percent);
+        self.last = Some((cpu, gpu));
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        let image = meter_image(percent);
+        let image = meter_image(cpu, gpu);
         if let Some(button) = self.item.button(mtm) {
             button.setImage(Some(&image));
-            button.setToolTip(Some(&NSString::from_str(&format!("CPU Usage: {percent}%"))));
+            button.setToolTip(Some(&NSString::from_str(&format!(
+                "CPU Usage: {cpu}%\nGPU Usage: {gpu}%"
+            ))));
         }
     }
 }
@@ -131,36 +138,42 @@ impl Drop for Tray {
     }
 }
 
-/// Draws the XP tray meter: a black well with green bars filling from below.
+/// Draws two XP tray meters side by side: CPU left, GPU right.
 ///
-/// The drawing handler reruns for each backing scale, so the meter stays
+/// The drawing handler reruns for each backing scale, so the meters stay
 /// crisp on Retina menu bars.
-fn meter_image(percent: u32) -> Retained<NSImage> {
-    let bars = 6u32;
-    let lit = (percent * bars).div_ceil(100).max(u32::from(percent > 0));
+fn meter_image(cpu: u32, gpu: u32) -> Retained<NSImage> {
     let draw = RcBlock::new(move |_: NSRect| -> Bool {
-        let rgb = |r: f64, g: f64, b: f64| NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0);
-        let rect =
-            |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
-        // Dark green frame around a black well, as in the XP tray icon.
-        rgb(0.0, 0.31, 0.0).setFill();
-        NSBezierPath::fillRect(rect(0.0, 1.0, ICON_W, ICON_H - 2.0));
-        rgb(0.0, 0.0, 0.0).setFill();
-        NSBezierPath::fillRect(rect(1.0, 2.0, ICON_W - 2.0, ICON_H - 4.0));
-        // Six 1pt bars with 1pt gaps inside the 12pt tall well.
-        for i in 0..bars {
-            let y = 2.5 + f64::from(i) * 2.0;
-            if i < lit {
-                rgb(0.0, 1.0, 0.0).setFill();
-            } else {
-                rgb(0.0, 0.35, 0.0).setFill();
-            }
-            NSBezierPath::fillRect(rect(2.0, y, ICON_W - 4.0, 1.0));
-        }
+        draw_meter(0.0, cpu);
+        draw_meter(METER_W + GAP, gpu);
         Bool::YES
     });
     let image =
         NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(ICON_W, ICON_H), false, &draw);
     image.setTemplate(false);
     image
+}
+
+/// One meter: a black well with green bars filling from below, at x offset `x0`.
+fn draw_meter(x0: f64, percent: u32) {
+    let bars = 6u32;
+    let lit = (percent * bars).div_ceil(100).max(u32::from(percent > 0));
+    let rgb = |r: f64, g: f64, b: f64| NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0);
+    let rect =
+        |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x0 + x, y), NSSize::new(w, h));
+    // Dark green frame around a black well, as in the XP tray icon.
+    rgb(0.0, 0.31, 0.0).setFill();
+    NSBezierPath::fillRect(rect(0.0, 1.0, METER_W, ICON_H - 2.0));
+    rgb(0.0, 0.0, 0.0).setFill();
+    NSBezierPath::fillRect(rect(1.0, 2.0, METER_W - 2.0, ICON_H - 4.0));
+    // Six 1pt bars with 1pt gaps inside the 12pt tall well.
+    for i in 0..bars {
+        let y = 2.5 + f64::from(i) * 2.0;
+        if i < lit {
+            rgb(0.0, 1.0, 0.0).setFill();
+        } else {
+            rgb(0.0, 0.35, 0.0).setFill();
+        }
+        NSBezierPath::fillRect(rect(2.0, y, METER_W - 4.0, 1.0));
+    }
 }

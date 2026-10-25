@@ -427,7 +427,7 @@ impl TaskManager {
             );
         }
         if let Some(tray) = &mut self.tray {
-            tray.set_cpu(snap.cpu_total);
+            tray.set_usage(snap.cpu_total, snap.gpus.first().map_or(0.0, |g| g.device));
         }
         self.snap = snap;
         self.apps = apps::running_apps();
