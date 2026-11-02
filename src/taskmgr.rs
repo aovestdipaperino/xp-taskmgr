@@ -239,8 +239,9 @@ impl TaskManager {
             vec![
                 col("Image Name", 130., false),
                 col("PID", 50., true),
-                col("User Name", 85., false),
-                col("CPU", 36., true),
+                col("User Name", 65., false),
+                col("CPU", 46., true),
+                col("GPU", 46., true),
                 col("Mem Usage", 80., true),
             ],
             Some((0, ColumnSort::Ascending)),
@@ -465,6 +466,7 @@ impl TaskManager {
             .filter(|p| self.all_users || p.uid == me)
             .map(|p| {
                 let cpu = p.cpu.round() as u32;
+                let gpu = p.gpu.round() as u32;
                 Row {
                     id: u64::from(p.pid),
                     cells: vec![
@@ -472,6 +474,7 @@ impl TaskManager {
                         p.pid.to_string().into(),
                         p.user.clone().into(),
                         format!("{cpu:02}").into(),
+                        format!("{gpu:02}").into(),
                         format!("{} K", thousands(p.memory / 1024)).into(),
                     ],
                     keys: vec![
@@ -479,6 +482,7 @@ impl TaskManager {
                         Key::Num(f64::from(p.pid)),
                         Key::Text(p.user.clone()),
                         Key::Num(f64::from(p.cpu)),
+                        Key::Num(f64::from(p.gpu)),
                         Key::Num(p.memory as f64),
                     ],
                 }
@@ -493,6 +497,7 @@ impl TaskManager {
                     "0".into(),
                     "SYSTEM".into(),
                     format!("{:02}", idle.round() as u32).into(),
+                    "00".into(),
                     "16 K".into(),
                 ],
                 keys: vec![
@@ -500,6 +505,7 @@ impl TaskManager {
                     Key::Num(-1.0),
                     Key::Text("SYSTEM".into()),
                     Key::Num(f64::from(idle)),
+                    Key::Num(0.0),
                     Key::Num(16.0 * 1024.0),
                 ],
             });

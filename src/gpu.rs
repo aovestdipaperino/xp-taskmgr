@@ -6,6 +6,7 @@
 //! device, renderer and tiler utilization; Intel and AMD drivers report a
 //! subset under slightly different keys, so missing counters read as zero.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_void};
 
 /// One GPU at one instant. Memory figures are in bytes.
@@ -56,6 +57,80 @@ pub fn sample() -> Vec<GpuInfo> {
         IOObjectRelease(iter);
     }
     gpus
+}
+
+/// Returns cumulative GPU time in nanoseconds for every process with a GPU
+/// user client. Multiple command queues belonging to one process are summed.
+pub fn process_times() -> HashMap<u32, u64> {
+    let mut times = HashMap::new();
+    // SAFETY: the matching dictionary is consumed by
+    // IOServiceGetMatchingServices; every registry entry and iterator is
+    // released, and CF properties are owned by `Property`.
+    unsafe {
+        let matching = IOServiceMatching(c"IOAccelerator".as_ptr());
+        if matching.is_null() {
+            return times;
+        }
+        let mut accelerators = 0;
+        if IOServiceGetMatchingServices(0, matching, &raw mut accelerators) != 0 {
+            return times;
+        }
+        loop {
+            let accelerator = IOIteratorNext(accelerators);
+            if accelerator == 0 {
+                break;
+            }
+            let mut clients = 0;
+            if IORegistryEntryGetChildIterator(accelerator, c"IOService".as_ptr(), &raw mut clients)
+                == 0
+            {
+                loop {
+                    let client = IOIteratorNext(clients);
+                    if client == 0 {
+                        break;
+                    }
+                    if let Some((pid, time)) = read_client(client) {
+                        let total = times.entry(pid).or_insert(0);
+                        *total = total.saturating_add(time);
+                    }
+                    IOObjectRelease(client);
+                }
+                IOObjectRelease(clients);
+            }
+            IOObjectRelease(accelerator);
+        }
+        IOObjectRelease(accelerators);
+    }
+    times
+}
+
+/// Reads the creator PID and cumulative GPU time from one GPU user client.
+unsafe fn read_client(client: u32) -> Option<(u32, u64)> {
+    // SAFETY: client is a live registry entry owned by the caller. Array
+    // elements and dictionary values are borrowed while their owner lives.
+    unsafe {
+        let creator = Property::new(client, c"IOUserClientCreator")?;
+        let creator = cf_string(creator.0)?;
+        let pid = creator
+            .strip_prefix("pid ")?
+            .split([',', ' '])
+            .next()?
+            .parse()
+            .ok()?;
+        let usage = Property::new(client, c"AppUsage")?;
+        if CFGetTypeID(usage.0) != CFArrayGetTypeID() {
+            return Some((pid, 0));
+        }
+        let mut total = 0u64;
+        for ix in 0..CFArrayGetCount(usage.0) {
+            let entry = CFArrayGetValueAtIndex(usage.0, ix);
+            if entry.is_null() || CFGetTypeID(entry) != CFDictionaryGetTypeID() {
+                continue;
+            }
+            total = total.saturating_add(dict_number(entry, c"accumulatedGPUTime").unwrap_or(0));
+        }
+        Some((pid, total))
+    }
 }
 
 /// Reads one `IOAccelerator` entry, `None` when it has no statistics.
@@ -170,6 +245,9 @@ unsafe extern "C" {
     fn CFRelease(cf: CFTypeRef);
     fn CFGetTypeID(cf: CFTypeRef) -> usize;
     fn CFDictionaryGetTypeID() -> usize;
+    fn CFArrayGetTypeID() -> usize;
+    fn CFArrayGetCount(array: CFTypeRef) -> isize;
+    fn CFArrayGetValueAtIndex(array: CFTypeRef, ix: isize) -> CFTypeRef;
     fn CFNumberGetTypeID() -> usize;
     fn CFStringGetTypeID() -> usize;
     fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
@@ -184,6 +262,7 @@ unsafe extern "C" {
     fn IOServiceGetMatchingServices(port: u32, matching: CFTypeRef, iter: *mut u32) -> i32;
     fn IOIteratorNext(iter: u32) -> u32;
     fn IOObjectRelease(object: u32) -> i32;
+    fn IORegistryEntryGetChildIterator(entry: u32, plane: *const c_char, iter: *mut u32) -> i32;
     fn IORegistryEntryCreateCFProperty(
         entry: u32,
         key: CFTypeRef,

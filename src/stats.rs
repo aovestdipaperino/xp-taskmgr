@@ -30,6 +30,8 @@ pub struct ProcessInfo {
     pub uid: u32,
     /// CPU usage normalized to the whole machine, 0..=100.
     pub cpu: f32,
+    /// GPU usage over the last sample interval, 0..=100.
+    pub gpu: f32,
     /// Resident memory in bytes.
     pub memory: u64,
 }
@@ -95,6 +97,8 @@ pub struct Sampler {
     users: Users,
     last_ticks: Option<[u32; 4]>,
     last_net: Instant,
+    last_gpu_sample: Instant,
+    last_gpu_times: HashMap<u32, u64>,
     commit_peak: u64,
     port_names: HashMap<String, String>,
     page_size: u64,
@@ -128,6 +132,8 @@ impl Sampler {
             users: Users::new_with_refreshed_list(),
             last_ticks: cpu_load_ticks(),
             last_net: Instant::now(),
+            last_gpu_sample: Instant::now(),
+            last_gpu_times: HashMap::new(),
             commit_peak: 0,
             port_names: hardware_port_names(),
             page_size,
@@ -156,6 +162,12 @@ impl Sampler {
             .collect();
         let cpu_count = self.system.cpus().len().max(1) as f32;
 
+        let gpu_times = gpu::process_times();
+        let now = Instant::now();
+        let gpu_elapsed = now.duration_since(self.last_gpu_sample).as_secs_f64();
+        self.last_gpu_sample = now;
+        let previous_gpu_times = std::mem::take(&mut self.last_gpu_times);
+
         let mut processes = Vec::with_capacity(self.system.processes().len());
         let (mut handles, mut threads) = (0u64, 0u64);
         for (pid, process) in self.system.processes() {
@@ -178,9 +190,15 @@ impl Sampler {
                 user,
                 uid,
                 cpu: (process.cpu_usage() / cpu_count).clamp(0.0, 100.0),
+                gpu: gpu_percentage(
+                    previous_gpu_times.get(&pid).copied(),
+                    gpu_times.get(&pid).copied().unwrap_or(0),
+                    gpu_elapsed,
+                ),
                 memory: process.memory(),
             });
         }
+        self.last_gpu_times = gpu_times;
 
         let vm = vm_statistics(self.page_size);
         let kib = |b: u64| b / 1024;
@@ -256,6 +274,15 @@ impl Sampler {
         adapters.sort_by(|a, b| a.device.cmp(&b.device));
         adapters
     }
+}
+
+/// Converts a process's cumulative GPU-time delta into interval utilization.
+fn gpu_percentage(previous: Option<u64>, current: u64, elapsed: f64) -> f32 {
+    let Some(previous) = previous else {
+        return 0.0;
+    };
+    let delta = current.saturating_sub(previous);
+    (delta as f64 * 100.0 / (elapsed.max(0.001) * 1e9)).clamp(0.0, 100.0) as f32
 }
 
 /// Aggregated host CPU ticks in user, system, idle, nice order.
@@ -448,7 +475,24 @@ fn user_sessions() -> Vec<UserSession> {
 
 #[cfg(test)]
 mod tests {
-    use super::Sampler;
+    use super::{Sampler, gpu_percentage};
+
+    #[test]
+    fn calculates_process_gpu_utilization() {
+        let cases = [
+            (None, 1_000_000_000, 1.0, 0.0),
+            (Some(500_000_000), 750_000_000, 0.5, 50.0),
+            (Some(1_000), 500, 1.0, 0.0),
+            (Some(0), 2_000_000_000, 1.0, 100.0),
+        ];
+        for (previous, current, elapsed, expected) in cases {
+            let actual = gpu_percentage(previous, current, elapsed);
+            assert!(
+                (actual - expected).abs() < 0.001,
+                "expected {expected}, got {actual}"
+            );
+        }
+    }
 
     #[test]
     fn samples_the_system() {
@@ -464,6 +508,11 @@ mod tests {
                 snap.processes.len()
             );
             assert!(!snap.processes.is_empty());
+            assert!(
+                snap.processes
+                    .iter()
+                    .all(|p| (0.0..=100.0).contains(&p.gpu))
+            );
             assert!(snap.phys_total > 0);
             assert!(snap.commit_limit >= snap.phys_total);
         }
