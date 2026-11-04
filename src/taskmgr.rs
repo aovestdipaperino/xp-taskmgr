@@ -1363,22 +1363,26 @@ impl TaskManager {
                 ),
             )
             .flex_1()
-            .min_h(px(90.))
+            .min_h(px(if self.compact { 0. } else { 90. }))
         });
-        div()
+        let page = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .gap(px(6.))
-            .children(graphs)
-            .child(
-                div()
-                    .h(px(110.))
-                    .flex()
-                    .flex_col()
-                    .child(Self::render_list(&self.net_list)),
-            )
+            .children(graphs);
+        // Tiny footprint mode keeps only the adapter graphs, as on XP.
+        if self.compact {
+            return page;
+        }
+        page.child(
+            div()
+                .h(px(110.))
+                .flex()
+                .flex_col()
+                .child(Self::render_list(&self.net_list)),
+        )
     }
 
     fn render_users(&self) -> impl IntoElement {
@@ -1458,9 +1462,10 @@ impl Render for TaskManager {
             _ => self.render_users().into_any_element(),
         };
 
-        // Double-clicking the Performance or GPU page toggles tiny footprint
-        // mode, as on XP; in that mode a plain drag anywhere moves the window.
-        let toggles = matches!(self.tab, 2 | 3);
+        // Double-clicking the Performance, GPU or Networking page toggles tiny
+        // footprint mode, as on XP; in that mode a plain drag anywhere moves
+        // the window.
+        let toggles = matches!(self.tab, 2..=4);
         let page = div()
             .id("page")
             .flex()
