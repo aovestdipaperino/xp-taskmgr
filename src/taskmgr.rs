@@ -1244,6 +1244,27 @@ impl TaskManager {
         } else {
             gpu.cores.to_string()
         };
+        let usage_row = graph_row(
+            "GPU Usage",
+            graph::meter(
+                gpu.device / 100.0,
+                format!("{} %", gpu.device.round() as u32),
+            )
+            .into_any_element(),
+            "GPU Usage History",
+            history(&self.gpu_hist, color::graph_line()),
+            false,
+        );
+        // Tiny footprint mode keeps only the usage row, as on Performance.
+        if self.compact {
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(usage_row)
+                .into_any_element();
+        }
         div()
             .flex()
             .flex_col()
@@ -1251,17 +1272,7 @@ impl TaskManager {
             .min_h_0()
             .gap(px(6.))
             .px(px(4.))
-            .child(graph_row(
-                "GPU Usage",
-                graph::meter(
-                    gpu.device / 100.0,
-                    format!("{} %", gpu.device.round() as u32),
-                )
-                .into_any_element(),
-                "GPU Usage History",
-                history(&self.gpu_hist, color::graph_line()),
-                false,
-            ))
+            .child(usage_row)
             .child(graph_row(
                 "GPU Memory",
                 graph::meter(mem_fraction, format!("{} MB", gpu.mem_in_use >> 20))
@@ -1447,9 +1458,9 @@ impl Render for TaskManager {
             _ => self.render_users().into_any_element(),
         };
 
-        // Double-clicking the Performance page toggles tiny footprint mode, as
-        // on XP; in that mode a plain drag anywhere moves the window.
-        let toggles = self.tab == 2;
+        // Double-clicking the Performance or GPU page toggles tiny footprint
+        // mode, as on XP; in that mode a plain drag anywhere moves the window.
+        let toggles = matches!(self.tab, 2 | 3);
         let page = div()
             .id("page")
             .flex()
