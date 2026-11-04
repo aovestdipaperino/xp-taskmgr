@@ -357,6 +357,7 @@ impl TableDelegate for ListView {
             .and_then(|r| r.cells.get(col_ix))
             .cloned()
             .unwrap_or_default();
+        let right = self.columns.get(col_ix).is_some_and(|c| c.right);
         div()
             .w_full()
             .min_w_0()
@@ -364,6 +365,7 @@ impl TableDelegate for ListView {
             .whitespace_nowrap()
             .overflow_hidden()
             .text_ellipsis()
+            .when(right, gpui_kit::Styled::text_right)
             .text_color(if selected {
                 color::highlight()
             } else {
