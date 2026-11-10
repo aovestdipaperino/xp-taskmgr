@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.5 - 2026-11-10
+
+- Fixed a further crash (`CFRelease() called with NULL`) in GPU process sampling. A registry entry without an `AppUsage` or `IOUserClientCreator` property is now treated as a missing reading instead of aborting the app; the 1.4.4 fix covered the key string but not the property value.
+
 ## 1.4.4 - 2026-11-10
 
 - Fixed a crash (`CFRelease() called with NULL`) in GPU sampling. A failed CoreFoundation string allocation is now treated as a missing reading instead of being released.

@@ -176,7 +176,13 @@ impl Property {
             let key = cf_str(key)?;
             let value = IORegistryEntryCreateCFProperty(entry, key, std::ptr::null(), 0);
             CFRelease(key);
-            (!value.is_null()).then_some(Self(value))
+            // A `then_some(Self(value))` would build the `Property` anyway and let
+            // its drop glue release NULL when the property is missing.
+            if value.is_null() {
+                None
+            } else {
+                Some(Self(value))
+            }
         }
     }
 }
@@ -278,6 +284,13 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_property_is_none() {
+        // Entry 0 resolves to no property at all, so this exercises the NULL path
+        // that used to abort the process through `Property`'s drop glue.
+        assert!(unsafe { super::Property::new(0, c"DefinitelyNotAProperty") }.is_none());
+    }
+
     #[test]
     fn samples_the_gpu() {
         for gpu in super::sample() {
