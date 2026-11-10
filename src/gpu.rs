@@ -173,7 +173,7 @@ impl Property {
     unsafe fn new(entry: u32, key: &CStr) -> Option<Self> {
         // SAFETY: the key string lives until it is released below.
         unsafe {
-            let key = cf_str(key);
+            let key = cf_str(key)?;
             let value = IORegistryEntryCreateCFProperty(entry, key, std::ptr::null(), 0);
             CFRelease(key);
             (!value.is_null()).then_some(Self(value))
@@ -188,15 +188,20 @@ impl Drop for Property {
     }
 }
 
-unsafe fn cf_str(s: &CStr) -> CFTypeRef {
+/// Creates an owned `CFString`, `None` when CoreFoundation fails to allocate it.
+/// The caller must release the result; releasing NULL aborts the process.
+unsafe fn cf_str(s: &CStr) -> Option<CFTypeRef> {
     // SAFETY: s is a valid NUL-terminated UTF-8 string.
-    unsafe { CFStringCreateWithCString(std::ptr::null(), s.as_ptr(), K_CF_STRING_ENCODING_UTF8) }
+    let key = unsafe {
+        CFStringCreateWithCString(std::ptr::null(), s.as_ptr(), K_CF_STRING_ENCODING_UTF8)
+    };
+    (!key.is_null()).then_some(key)
 }
 
 unsafe fn dict_number(dict: CFTypeRef, key: &CStr) -> Option<u64> {
     // SAFETY: dict is a CFDictionary; the value is borrowed, not owned.
     unsafe {
-        let key = cf_str(key);
+        let key = cf_str(key)?;
         let value = CFDictionaryGetValue(dict, key);
         CFRelease(key);
         if value.is_null() {

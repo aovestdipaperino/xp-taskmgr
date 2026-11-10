@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.4 - 2026-11-10
+
+- Fixed a crash (`CFRelease() called with NULL`) in GPU sampling. A failed CoreFoundation string allocation is now treated as a missing reading instead of being released.
+
 ## 1.4.3 - 2026-11-04
 
 - Double-clicking the Networking tab now toggles tiny footprint mode, as on the Performance and GPU tabs, showing only the adapter graphs.
