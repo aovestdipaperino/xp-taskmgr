@@ -1,6 +1,6 @@
 [package]
 name = "xp-taskmgr"
-version = "1.4.5"
+version = "1.4.6"
 edition = "2024"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 description = "A Windows XP style Task Manager for macOS, built with GPUI and gpui-component"
@@ -16,7 +16,7 @@ gpui-kit = "0.8"
 sysinfo = "0.38"
 libc = "0.2"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSGeometry", "NSObject"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSGeometry", "NSObject", "NSUserDefaults"] }
 objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSScreen", "NSWorkspace", "NSWindow", "NSView", "NSButton", "NSControl", "NSResponder", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSImage", "NSColor", "NSBezierPath", "NSMenu", "NSMenuItem", "NSGraphics", "NSCell", "block2"] }
 raw-window-handle = "0.6"
 futures = "0.3"

@@ -79,6 +79,7 @@ pub struct AboutBox {
     focus: FocusHandle,
     info: Info,
     status: Status,
+    auto_update: bool,
 }
 
 /// Opens the About box centered on screen.
@@ -105,6 +106,7 @@ pub fn open(memory_kb: u64, cx: &mut App) -> Option<AnyWindowHandle> {
                 focus,
                 info: Info::gather(memory_kb),
                 status: Status::Idle,
+                auto_update: mac::setting(update::AUTO_UPDATE, false),
             }
         })
     })
@@ -209,7 +211,10 @@ impl AboutBox {
                 cx.spawn(async move |this, cx| {
                     let result = cx
                         .background_executor()
-                        .spawn(async move { update::install(&version) })
+                        .spawn(async move {
+                            let mut staged = update::download(&version)?;
+                            update::apply(&mut staged)
+                        })
                         .await;
                     let _ = this.update(cx, |t, cx| match result {
                         Ok(()) => cx.quit(),
@@ -290,6 +295,15 @@ impl Render for AboutBox {
             .child(div().pl(px(16.)).child(info.computer.clone()))
             .child(div().h(px(10.)))
             .child(div().flex().child("Project: ").child(github))
+            .child(div().pt(px(8.)).child(xp::checkbox(
+                "about-auto-update",
+                "Download and install updates automatically, checking every 10 minutes",
+                self.auto_update,
+                cx.listener(|this, _, _, _| {
+                    this.auto_update = !this.auto_update;
+                    mac::set_setting(update::AUTO_UPDATE, this.auto_update);
+                }),
+            )))
             .child(div().flex_1())
             .child(div().pb(px(6.)).child(self.status.message()))
             // Etched separator.

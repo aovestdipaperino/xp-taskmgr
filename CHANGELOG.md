@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.6 - 2026-11-10
+
+- Added an automatic update check. The About box now has a "Download and install updates automatically" option, off by default and remembered between runs: when it is on, a release is looked for every 10 minutes and downloaded in the background, then a dialog asks before restarting and installs on its own after 15 seconds unless you cancel.
+- Menu options are now remembered between runs: Always On Top, Minimize On Use, Hide When Minimized, Show Kernel Times and the CPU History choice. Update Speed is still reset to Normal on start.
+
 ## 1.4.5 - 2026-11-10
 
 - Fixed a further crash (`CFRelease() called with NULL`) in GPU process sampling. A registry entry without an `AppUsage` or `IOUserClientCreator` property is now treated as a missing reading instead of aborting the app; the 1.4.4 fix covered the key string but not the property value.

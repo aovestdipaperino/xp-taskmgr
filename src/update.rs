@@ -6,8 +6,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const REPO_URL: &str = "https://github.com/aovestdipaperino/xp-taskmgr";
+
+/// The persisted option that arms the background update check.
+pub const AUTO_UPDATE: &str = "AutoUpdate";
+
+/// How often the background check looks for a release.
+pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
 
 const APP_NAME: &str = "Task Manager.app";
 
@@ -91,9 +98,52 @@ impl Drop for Scratch {
     }
 }
 
-/// Downloads `version`'s disk image and replaces the running bundle with the
-/// app inside it, then schedules a relaunch. The caller should quit afterwards.
-pub fn install(version: &str) -> Result<(), String> {
+/// True while an update is downloading or swapping in, so the automatic check
+/// and the About box button cannot both work on the same bundle.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Held for as long as an update owns the bundle.
+#[derive(Debug)]
+struct Claim;
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Claims the update path; `None` when an update is already running.
+fn claim() -> Option<Claim> {
+    // Not `then_some(Claim)`: the temporary would be built and dropped on the
+    // branch where no claim was taken, freeing somebody else's.
+    if INSTALLING.swap(true, Ordering::SeqCst) {
+        None
+    } else {
+        Some(Claim)
+    }
+}
+
+/// A release downloaded and staged next to the running bundle, waiting for the
+/// user. Dropping it without applying discards the staged copy.
+#[derive(Debug)]
+pub struct Staged {
+    staged: Option<PathBuf>,
+    _claim: Claim,
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if let Some(staged) = &self.staged {
+            let _ = std::fs::remove_dir_all(staged);
+        }
+    }
+}
+
+/// Downloads `version`'s disk image and copies the app inside it next to the
+/// running bundle. Blocks; call it from the background executor. Nothing is
+/// touched until `apply`.
+pub fn download(version: &str) -> Result<Staged, String> {
+    let claim = claim().ok_or("An update is already in progress")?;
     let bundle = current_bundle()?;
     let dir = std::env::temp_dir().join(format!("xp-taskmgr-update-{}", std::process::id()));
     let mount = dir.join("mnt");
@@ -131,9 +181,9 @@ pub fn install(version: &str) -> Result<(), String> {
 
     // Stage next to the live bundle so the final swap is a same-volume rename.
     let staged = bundle.with_extension("app.update");
-    let old = bundle.with_extension("app.old");
     let _ = std::fs::remove_dir_all(&staged);
-    let _ = std::fs::remove_dir_all(&old);
+    std::fs::create_dir_all(&staged)
+        .map_err(|e| format!("Could not write next to the app (is it writable?): {e}"))?;
     run(
         "/usr/bin/ditto",
         &[
@@ -143,9 +193,31 @@ pub fn install(version: &str) -> Result<(), String> {
     )
     .map_err(|e| format!("Could not write next to the app (is it writable?): {e}"))?;
 
+    Ok(Staged {
+        staged: Some(staged),
+        _claim: claim,
+    })
+}
+
+/// Swaps a staged update in over the running bundle and schedules the relaunch.
+/// The caller should quit afterwards.
+pub fn apply(staged: &mut Staged) -> Result<(), String> {
+    let path = staged.staged.take().ok_or("Nothing staged")?;
+    let bundle = current_bundle()?;
+    let old = bundle.with_extension("app.old");
+    let _ = std::fs::remove_dir_all(&old);
+
     std::fs::rename(&bundle, &old).map_err(|e| e.to_string())?;
-    if let Err(e) = std::fs::rename(&staged, &bundle) {
+    if let Err(e) = std::fs::rename(&path, &bundle) {
         let _ = std::fs::rename(&old, &bundle);
+        // Put the copy back so a retry does not need a fresh download.
+        if std::fs::create_dir_all(&path).is_ok() {
+            let _ = run(
+                "/usr/bin/ditto",
+                &[&bundle.to_string_lossy(), &path.to_string_lossy()],
+            );
+        }
+        staged.staged = Some(path);
         return Err(e.to_string());
     }
     let _ = std::fs::remove_dir_all(&old);
@@ -161,7 +233,23 @@ pub fn install(version: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_newer;
+    use super::{Staged, claim, is_newer};
+
+    #[test]
+    fn discarding_a_staged_update_frees_the_bundle() {
+        // Cancelling the offer must remove the staged copy and let a later
+        // check download again.
+        let dir = std::env::temp_dir().join(format!("xp-taskmgr-staged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let taken = claim().expect("the update path starts free");
+        drop(Staged {
+            staged: Some(dir.clone()),
+            _claim: taken,
+        });
+        assert!(!dir.exists(), "the staged copy should be discarded");
+        assert!(claim().is_some(), "the update path should be free again");
+    }
 
     #[test]
     fn compares_versions_numerically() {

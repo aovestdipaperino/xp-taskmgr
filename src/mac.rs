@@ -7,6 +7,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSView, NSWindow, NSWindowButton,
     NSWindowStyleMask,
 };
+use objc2_foundation::{NSString, NSUserDefaults};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
@@ -94,5 +95,48 @@ pub fn make_square(window: &Window, resizable: bool) {
 pub fn set_min_size(window: &Window, (width, height): (f64, f64)) {
     if let Some(ns) = ns_window(window) {
         ns.setContentMinSize(objc2_foundation::NSSize::new(width, height));
+    }
+}
+
+/// Reads a persisted menu option, `default` while it has never been set.
+///
+/// The presence check matters: `boolForKey` reports false for an unset key,
+/// which would flip the options XP shipped enabled.
+pub fn setting(key: &str, default: bool) -> bool {
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let key = NSString::from_str(key);
+    if defaults.objectForKey(&key).is_none() {
+        default
+    } else {
+        defaults.boolForKey(&key)
+    }
+}
+
+/// Stores a menu option so it survives a restart.
+pub fn set_setting(key: &str, value: bool) {
+    let defaults = NSUserDefaults::standardUserDefaults();
+    defaults.setBool_forKey(value, &NSString::from_str(key));
+}
+
+#[cfg(test)]
+mod tests {
+    const KEY: &str = "XPTaskMgrTestOption";
+
+    fn clear() {
+        let defaults = objc2_foundation::NSUserDefaults::standardUserDefaults();
+        defaults.removeObjectForKey(&objc2_foundation::NSString::from_str(KEY));
+    }
+
+    #[test]
+    fn options_keep_their_default_until_set() {
+        clear();
+        // An unset key is not the same as a stored false: XP shipped some
+        // options enabled.
+        assert!(super::setting(KEY, true));
+        super::set_setting(KEY, false);
+        assert!(!super::setting(KEY, true));
+        super::set_setting(KEY, true);
+        assert!(super::setting(KEY, false));
+        clear();
     }
 }

@@ -22,6 +22,7 @@ use crate::mac;
 use crate::stats::{Sampler, Snapshot};
 use crate::table::{self, ColumnSpec, Key, ListView, Row, RowMenu};
 use crate::tray::{Tray, TrayEvent};
+use crate::update;
 use crate::xp::{self, Bevel, color};
 use futures::StreamExt as _;
 
@@ -187,10 +188,25 @@ pub struct TaskManager {
     net_list: Entity<TableState<ListView>>,
     user_list: Entity<TableState<ListView>>,
     sampler: Arc<Mutex<Sampler>>,
+    update_offer: Option<Entity<UpdateOffer>>,
     _poll: Task<()>,
     _tray_events: Task<()>,
+    _update_watch: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// A downloaded update waiting behind the timed confirmation dialog.
+#[derive(Debug)]
+struct UpdateOffer {
+    version: String,
+    /// Seconds left before it installs itself; `None` once it was answered.
+    left: Option<usize>,
+    error: Option<String>,
+    staged: Option<update::Staged>,
+}
+
+/// Seconds the update dialog waits before installing on its own.
+const UPDATE_COUNTDOWN: usize = 15;
 
 impl std::fmt::Debug for TaskManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -293,13 +309,13 @@ impl TaskManager {
             net_hist: HashMap::new(),
             speed: Speed::Normal,
             // XP defaults to one graph per CPU on multiprocessor machines.
-            per_core: true,
-            show_kernel: false,
+            per_core: mac::setting("OneGraphPerCpu", true),
+            show_kernel: mac::setting("ShowKernelTimes", false),
             all_users: false,
-            on_top: false,
-            minimize_on_use: false,
+            on_top: mac::setting("AlwaysOnTop", false),
+            minimize_on_use: mac::setting("MinimizeOnUse", false),
             // XP shipped with Hide When Minimized on.
-            hide_when_minimized: true,
+            hide_when_minimized: mac::setting("HideWhenMinimized", true),
             compact: false,
             tray: None,
             about: None,
@@ -309,8 +325,10 @@ impl TaskManager {
             net_list,
             user_list,
             sampler: Arc::new(Mutex::new(Sampler::new())),
+            update_offer: None,
             _poll: Task::ready(()),
             _tray_events: Task::ready(()),
+            _update_watch: Task::ready(()),
             _subscriptions: Vec::new(),
         };
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
@@ -364,8 +382,172 @@ impl TaskManager {
             })
             .collect();
         this._poll = Self::poll(cx);
+        this._update_watch = Self::watch_updates(window, cx);
+        if this.on_top {
+            mac::set_always_on_top(window, true);
+        }
         this.focus.focus(window, cx);
         this
+    }
+
+    /// Checks for a release every 10 minutes while the About box option is on,
+    /// downloads what it finds, then asks the user before restarting.
+    fn watch_updates(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        let mut announced: Option<String> = None;
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(update::CHECK_INTERVAL).await;
+                let Ok(alive) = this.update_in(cx, |t, _, _| t.update_offer.is_none()) else {
+                    break;
+                };
+                if !alive || !mac::setting(update::AUTO_UPDATE, false) {
+                    continue;
+                }
+                let latest = cx
+                    .background_executor()
+                    .spawn(async { update::latest_version() })
+                    .await;
+                let latest = match latest {
+                    Ok(v) if update::is_newer(&v, env!("CARGO_PKG_VERSION")) => v,
+                    _ => continue,
+                };
+                // One offer per release, however many times the check runs.
+                if announced.as_deref() == Some(&latest) {
+                    continue;
+                }
+                announced = Some(latest.clone());
+                let version = latest.clone();
+                let Ok(staged) = cx
+                    .background_executor()
+                    .spawn(async move { update::download(&version) })
+                    .await
+                else {
+                    continue;
+                };
+                let offer = cx.new(|_| UpdateOffer {
+                    version: latest,
+                    left: Some(UPDATE_COUNTDOWN),
+                    error: None,
+                    staged: Some(staged),
+                });
+                let _ = this.update_in(cx, |t, window, cx| {
+                    t.prompt_update(offer, window, cx);
+                });
+            }
+        })
+    }
+
+    /// Shows the timed offer: it installs itself unless the user cancels.
+    fn prompt_update(
+        &mut self,
+        offer: Entity<UpdateOffer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_offer = Some(offer.clone());
+        let this = cx.entity();
+        let shown = offer.clone();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let o = shown.read(cx);
+            let countdown = o.left.unwrap_or_default();
+            let install = {
+                let (this, offer) = (this.clone(), shown.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    offer.update(cx, |o, cx| {
+                        o.left = None;
+                        cx.notify();
+                    });
+                    this.update(cx, TaskManager::apply_update);
+                    window.close_dialog(cx);
+                }
+            };
+            let cancel = {
+                let offer = shown.clone();
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    // Dropping the staged copy discards the download.
+                    offer.update(cx, |o, cx| {
+                        (o.left, o.staged) = (None, None);
+                        cx.notify();
+                    });
+                    window.close_dialog(cx);
+                }
+            };
+            dialog
+                .title("Task Manager Update")
+                .w(px(380.))
+                .bg(color::face())
+                .rounded_none()
+                .text_color(color::text())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(format!(
+                            "Version {} has been downloaded and is ready to install. \
+                             Task Manager will restart in {countdown} seconds unless you \
+                             cancel.",
+                            o.version
+                        ))
+                        .when_some(o.error.clone(), |el, e| {
+                            el.child(div().text_color(rgb(0xC00000)).child(e))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(6.))
+                                .child(xp::button("update-install", "Install", true, install))
+                                .child(xp::button("update-cancel", "Cancel", true, cancel)),
+                        ),
+                )
+        });
+
+        let ticking = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let Some(left) = offer.update(cx, |o, cx| {
+                    let left = o.left.as_mut()?;
+                    *left = left.saturating_sub(1);
+                    cx.notify();
+                    Some(*left)
+                }) else {
+                    break;
+                };
+                if left == 0 {
+                    let _ = this.update(cx, TaskManager::apply_update);
+                    break;
+                }
+            }
+        });
+        // The tick task stops by itself once the dialog has been answered.
+        ticking.detach();
+    }
+
+    /// Swaps the downloaded update over the running bundle and restarts.
+    fn apply_update(&mut self, cx: &mut Context<Self>) {
+        let Some(offer) = self.update_offer.clone() else {
+            return;
+        };
+        let Some(mut staged) = offer.update(cx, |o, _| o.staged.take()) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { update::apply(&mut staged) })
+                .await;
+            if result.is_ok() {
+                let _ = this.update(cx, |_, cx| cx.quit());
+                return;
+            }
+            let error = result.unwrap_err();
+            offer.update(cx, |o, cx| {
+                o.error = Some(error);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn poll(cx: &mut Context<Self>) -> Task<()> {
@@ -585,15 +767,18 @@ impl TaskManager {
             .on_action(cx.listener(|t, _: &AlwaysOnTop, window, cx| {
                 t.on_top = !t.on_top;
                 mac::set_always_on_top(window, t.on_top);
+                mac::set_setting("AlwaysOnTop", t.on_top);
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &HideWhenMinimized, _, cx| {
                 t.hide_when_minimized = !t.hide_when_minimized;
+                mac::set_setting("HideWhenMinimized", t.hide_when_minimized);
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &Minimize, window, _| t.minimize(window)))
             .on_action(cx.listener(|t, _: &MinimizeOnUse, _, cx| {
                 t.minimize_on_use = !t.minimize_on_use;
+                mac::set_setting("MinimizeOnUse", t.minimize_on_use);
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &RefreshNow, _, cx| t.refresh_now(cx)))
@@ -603,14 +788,17 @@ impl TaskManager {
             .on_action(cx.listener(|t, _: &SpeedPaused, _, cx| t.set_speed(Speed::Paused, cx)))
             .on_action(cx.listener(|t, _: &OneGraphAllCpus, _, cx| {
                 t.per_core = false;
+                mac::set_setting("OneGraphPerCpu", false);
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &OneGraphPerCpu, _, cx| {
                 t.per_core = true;
+                mac::set_setting("OneGraphPerCpu", true);
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &ShowKernelTimes, _, cx| {
                 t.show_kernel = !t.show_kernel;
+                mac::set_setting("ShowKernelTimes", t.show_kernel);
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &About, _, cx| t.open_about(cx)))
