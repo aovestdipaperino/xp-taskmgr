@@ -1,5 +1,7 @@
 # XP Task Manager for macOS
 
+[![GitHub stars](https://img.shields.io/github/stars/aovestdipaperino/xp-taskmgr?logo=github&color=brightgreen)](https://github.com/aovestdipaperino/xp-taskmgr/stargazers)
+
 A faithful recreation of the Windows XP Task Manager, running natively on macOS and showing your Mac's live data. Built in Rust with [GPUI](https://www.gpui.rs) and [gpui-component](https://github.com/longbridge/gpui-kit).
 
 The idea comes from [TaskMgr98](https://github.com/jankammerath/TaskMgr98) by Jan Kammerath, a classic Task Manager for Windows 11 written in Go that matches the Windows XP one feature for feature.
